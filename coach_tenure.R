@@ -21,7 +21,8 @@
 #      every plot embedded, ready to drop on any web server
 #
 # Data sources (nothing here is invented; every research row carries a URL)
-#   * nflverse games file: https://github.com/nflverse/nfldata (data/games.csv)
+#   * nflverse games file: https://github.com/nflverse/nfldata, downloaded to
+#     data/raw/games.csv (refreshed when the copy is more than a day old)
 #     – game scores plus the head coach credited for each team in each game.
 #   * data/research/coach_changes.csv – every head-coach departure 2000–2026,
 #     with the reason (fired / resigned / retired / ...) taken from the
@@ -31,6 +32,8 @@
 #     (the nflverse data starts in 1999), from each coach's Wikipedia infobox.
 #   * data/research/gm_tenures.csv, owner_tenures.csv – GM and controlling-owner
 #     tenures by team, from Wikipedia.
+#
+# Requirements: R >= 4.1 (native pipe, \(x) lambdas, raw strings).
 #
 # Package substitutions: none were needed. Everything used (survival,
 # survminer, tidyverse, cmprsk, base64enc, htmltools) is installed. cmprsk
@@ -59,9 +62,11 @@ dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
 dir.create("plots", showWarnings = FALSE)
 dir.create("output", showWarnings = FALSE)
 
-# Analysis window. The 2026 season is in progress, so for model *fitting*
-# every stint is administratively censored at the end of the 2025 season:
-# we know who survived 2025, but nobody has finished 2026 yet.
+# Analysis window. CURRENT_SEASON is the season in progress; for model
+# *fitting* every stint is administratively censored at the end of
+# LAST_COMPLETE_SEASON: we know who survived it, but nobody has finished the
+# current season yet. To roll forward to a new season, bump both values and
+# add that offseason's coaching, GM and owner changes to data/research/.
 LAST_COMPLETE_SEASON <- 2025
 CURRENT_SEASON       <- 2026
 
@@ -103,13 +108,33 @@ name_key <- function(x) {
 # ---- 1. Data ----------------------------------------------------------------
 
 ## 1a. Game results with the credited head coach ------------------------------
+# The file updates weekly in season, so a cached copy older than a day is
+# re-downloaded. If the download fails, an existing copy is used instead.
+games_url  <- "https://github.com/nflverse/nfldata/raw/master/data/games.csv"
 games_file <- "data/raw/games.csv"
-if (!file.exists(games_file)) {
-  download.file("https://github.com/nflverse/nfldata/raw/master/data/games.csv",
-                games_file, mode = "wb", quiet = TRUE)
+stale <- !file.exists(games_file) ||
+  difftime(Sys.time(), file.mtime(games_file), units = "hours") > 24
+if (stale) {
+  tmp <- tempfile(fileext = ".csv")
+  ok <- tryCatch(download.file(games_url, tmp, mode = "wb", quiet = TRUE) == 0,
+                 error = function(e) FALSE, warning = function(w) FALSE)
+  if (ok && file.size(tmp) > 0) {
+    file.copy(tmp, games_file, overwrite = TRUE)
+  } else if (file.exists(games_file)) {
+    warning("Could not refresh ", games_url, "; using the cached copy from ",
+            format(file.mtime(games_file), "%Y-%m-%d"))
+  } else {
+    stop("Could not download ", games_url)
+  }
 }
 games <- read_csv(games_file, show_col_types = FALSE) |>
   filter(!is.na(home_score))                 # games already played
+
+if (any(games$season > CURRENT_SEASON)) {
+  stop("The games file has results from season ", max(games$season),
+       ", but CURRENT_SEASON is ", CURRENT_SEASON, ". Update the season ",
+       "settings in section 0 and the research files in data/research/.")
+}
 
 relocated <- c(OAK = "LV", SD = "LAC", STL = "LA")   # one code per franchise
 
@@ -266,10 +291,19 @@ stints <- stints |>
       TRUE                          ~ NA_character_),
     strict_fired = reason_category == "fired")
 
+# Every stint that ended by the last complete season needs a departure
+# record. A coach who leaves during the current season may not have one yet;
+# that's fine, because stints are censored at LAST_COMPLETE_SEASON anyway.
 unmatched <- stints |> filter(is.na(event_type))
-if (nrow(unmatched) > 0) {
-  print(unmatched |> select(coach, team, hire_season, last_season))
+if (any(unmatched$last_season <= LAST_COMPLETE_SEASON)) {
+  print(unmatched |> filter(last_season <= LAST_COMPLETE_SEASON) |>
+          select(coach, team, hire_season, last_season))
   stop("Some ended stints have no departure record in coach_changes.csv")
+}
+if (nrow(unmatched) > 0) {
+  message("Left during ", CURRENT_SEASON, " with no departure record yet (censored): ",
+          paste0(unmatched$coach, " (", unmatched$team, ")", collapse = ", "))
+  stints <- stints |> mutate(event_type = coalesce(event_type, "unknown"))
 }
 # Reverse check: departures that match no stint should all be coaches hired
 # before 2000 (outside the sample) or who never coached a game.
@@ -370,9 +404,12 @@ tenure <- stints |>
          # status = 1 only for a firing; everything else is censored
          status  = as.integer(event_type == "fired" &
                                 last_season <= LAST_COMPLETE_SEASON),
-         # a stint that ended in 2026 (in progress) is censored at 2025
+         # a stint that ended during the current season is censored at the
+         # last complete season; its label says so
          event_type = if_else(last_season > LAST_COMPLETE_SEASON &
-                                event_type != "active", "active", event_type)) |>
+                                event_type != "active",
+                              paste0(event_type, " (", CURRENT_SEASON, ", censored)"),
+                              event_type)) |>
   arrange(hire_season, team)
 
 # Event flag on the season row in which the firing happened (the stint's
@@ -395,7 +432,7 @@ write_csv(coach_seasons |> select(coach, team, season, tenure_season, g_reg,
           "data/coach_seasons.csv")
 write_csv(interim_stints, "data/interim_stints.csv")
 
-fit_data <- tenure |> filter(seasons > 0)  # 2026 hires have no completed season
+fit_data <- tenure |> filter(seasons > 0)  # new hires have no completed season
 cat("\nStints (hires 2000+):", nrow(tenure),
     "| used for fitting:", nrow(fit_data),
     "| interim-only stints excluded:", nrow(interim_stints), "\n")
@@ -434,7 +471,7 @@ p_km_all <- ggsurvplot(
   risk.table.fontsize = 3.5,
   surv.median.line = "hv", legend = "none",
   xlab = "Seasons as head coach", ylab = "Probability not yet fired",
-  title = "NFL head coaches hired 2000–2025: time until firing",
+  title = paste0("NFL head coaches hired 2000–", LAST_COMPLETE_SEASON, ": time until firing"),
   subtitle = "Kaplan–Meier estimate with 95% CI; resignations, retirements and active coaches censored",
   ggtheme = theme_minimal(base_size = 12))
 save_km(p_km_all, "plots/01_km_overall.png")
@@ -589,8 +626,9 @@ ggsave("plots/05_cox_timevarying_forest.png", p_forest_tv, width = 9, height = 5
 # retired can no longer be fired.)
 
 cr <- fit_data |>
-  mutate(fstatus = case_when(event_type == "fired" ~ 1L,
-                             event_type == "active" ~ 0L,
+  mutate(fstatus = case_when(event_type == "active" |
+                               last_season > LAST_COMPLETE_SEASON ~ 0L,  # censored
+                             event_type == "fired" ~ 1L,
                              TRUE ~ 2L))  # resigned / retired / other
 ci <- cuminc(ftime = cr$seasons, fstatus = cr$fstatus, cencode = 0)
 names(ci) <- c("Fired", "Resigned, retired or other")[as.integer(str_sub(names(ci), -1))]
@@ -615,7 +653,7 @@ p_ci <- ggplot(ci_df, aes(time, est, colour = cause, fill = cause)) +
   scale_x_continuous(breaks = seq(0, 24, 2)) +
   scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
   labs(title = "How tenures end: firing vs. other exits",
-       subtitle = "Cumulative incidence (Aalen–Johansen), hires 2000–2025",
+       subtitle = paste0("Cumulative incidence (Aalen–Johansen), hires 2000–", LAST_COMPLETE_SEASON),
        x = "Seasons as head coach", y = "Share of coaches who have left this way") +
   theme(legend.position = "top", legend.justification = "left")
 ggsave("plots/06_competing_risks.png", p_ci, width = 9, height = 5.5, dpi = 150)
@@ -669,7 +707,7 @@ risk <- current |>
          p_fired_if_miss    = risk_for(current, FALSE),
          p_fired_if_playoff = risk_for(current, TRUE)) |>
   arrange(desc(p_fired_if_miss)) |>
-  transmute(coach, team, season_number = tenure_season, record_2026 = record,
+  transmute(coach, team, season_number = tenure_season, record = record,
             games_played = g_reg,
             proj_win_pct = round(win_pct, 3),
             proj_win_pct_change = round(win_pct_change, 3),
@@ -678,13 +716,13 @@ risk <- current |>
             p_fired_if_miss = round(p_fired_if_miss, 3),
             p_fired_if_playoff = round(p_fired_if_playoff, 3))
 
-write_csv(risk, "output/current_coach_risk_2026.csv")
-cat("\n== Model-estimated probability of being fired after 2026 ==\n")
+write_csv(risk, paste0("output/current_coach_risk_", CURRENT_SEASON, ".csv"))
+cat("\n== Model-estimated probability of being fired after", CURRENT_SEASON, "==\n")
 cat("(projected season: results to date + .500 the rest of the way; estimates, not forecasts)\n")
 print(risk, n = 32)
 
 p_risk <- risk |>
-  mutate(label = paste0(coach, " (", team, ", ", record_2026, ")"),
+  mutate(label = paste0(coach, " (", team, ", ", record, ")"),
          label = fct_reorder(label, p_fired_if_miss)) |>
   ggplot(aes(y = label)) +
   geom_segment(aes(x = p_fired_if_playoff, xend = p_fired_if_miss, yend = label),
@@ -694,8 +732,9 @@ p_risk <- risk |>
   scale_colour_manual(values = c("Makes playoffs" = pal[1], "Misses playoffs" = pal[2]),
                       name = NULL) +
   scale_x_continuous(labels = scales::percent) +
-  labs(title = "Model-estimated chance of being fired after the 2026 season",
-       subtitle = "Time-varying Cox model. 2026 = results to date + .500 the rest of the way. Model estimates, not predictions.",
+  labs(title = paste("Model-estimated chance of being fired after the", CURRENT_SEASON, "season"),
+       subtitle = paste("Time-varying Cox model.", CURRENT_SEASON,
+                        "= results to date + .500 the rest of the way. Model estimates, not predictions."),
        x = "Estimated probability", y = NULL) +
   theme(legend.position = "top", legend.justification = "left",
         panel.grid.major.y = element_blank())
@@ -710,6 +749,7 @@ ggsave("plots/07_current_coach_risk.png", p_risk, width = 9, height = 9, dpi = 1
 # above, so the page stays in step with the data each time the script runs.
 
 esc <- function(x) htmltools::htmlEscape(as.character(x))
+long_date <- function(d) paste0(format(d, "%B "), as.integer(format(d, "%d")), format(d, ", %Y"))
 pct <- function(x, d = 0) sprintf(paste0("%.", d, "f%%"), 100 * x)
 num <- function(x, d = 2) formatC(x, format = "f", digits = d)
 pval <- function(p) ifelse(p < 0.001, "< 0.001", formatC(p, format = "f", digits = 3))
@@ -809,7 +849,7 @@ hero <- paste0(
           min(tenure$hire_season), CURRENT_SEASON),
   "<h1>How long do NFL head coaches last?</h1>",
   sprintf('<p class="hero-sub">%d coaching stints, %d firings, and the model&rsquo;s read on who&rsquo;s on the hot seat after %d. Data through week %d (%s).</p>',
-          nrow(tenure), n_fired, CURRENT_SEASON, week_through, format(data_through, "%B %-d, %Y")),
+          nrow(tenure), n_fired, CURRENT_SEASON, week_through, long_date(data_through)),
   '<div class="scoreboard">',
   stat(km_tab[["median"]], "Median seasons until a coach is fired"),
   stat(pct(cif["Fired", "4"]), "Fired by the end of season 4"),
@@ -903,14 +943,14 @@ spot <- risk |> slice_head(n = 3)
 spotlight <- paste0('<div class="spotlight">', paste0(
   sprintf('<div class="spot"><div class="spot-rank">#%d</div><div class="spot-name">%s</div><div class="spot-meta">%s &middot; %s season &middot; %s</div><div class="spot-num">%s</div><div class="spot-label">if they miss the playoffs</div><div class="spot-alt">%s if they make it</div></div>',
           seq_len(nrow(spot)), esc(spot$coach), esc(spot$team), ordinal(spot$season_number),
-          esc(spot$record_2026), pct(spot$p_fired_if_miss), pct(spot$p_fired_if_playoff)),
+          esc(spot$record), pct(spot$p_fired_if_miss), pct(spot$p_fired_if_playoff)),
   collapse = ""), "</div>")
 
 bar_max <- max(risk$p_fired_if_miss)
 board_rows <- sprintf(
   '<tr><td class="num rank">%d</td><td><strong>%s</strong></td><td><span class="team">%s</span></td><td class="num">%d</td><td class="num">%s</td><td class="num">%s</td><td class="barcell"><div class="bar"><span style="width:%.1f%%"></span></div><b>%s</b></td><td class="num muted">%s</td></tr>',
   seq_len(nrow(risk)), esc(risk$coach), esc(risk$team), risk$season_number,
-  esc(risk$record_2026), num(risk$proj_win_pct, 3),
+  esc(risk$record), num(risk$proj_win_pct, 3),
   100 * risk$p_fired_if_miss / bar_max, pct(risk$p_fired_if_miss), pct(risk$p_fired_if_playoff))
 board <- paste0(
   '<div class="table-wrap card"><table class="board"><thead><tr>',
@@ -1069,7 +1109,7 @@ report <- paste0(
   sec_data, sec_km, sec_cox, sec_ph, sec_tv, sec_cr, sec_now, sec_lim,
   "</main>",
   sprintf('<footer><div class="foot-inner">Generated %s by coach_tenure.R &middot; Sources: nflverse, Wikipedia, Wikidata &middot; Model estimates, not predictions. Not affiliated with the NFL or any team.</div></footer>',
-          format(Sys.Date(), "%B %-d, %Y")),
+          long_date(Sys.Date())),
   "</body></html>")
 
 writeLines(report, "output/coach_tenure_report.html", useBytes = TRUE)

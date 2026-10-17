@@ -12,3 +12,8 @@ plots/
 .Rhistory
 .RData
 .Rproj.user/
+Rplots.pdf
+
+# Local tool and OS files
+.claude/
+.DS_Store
