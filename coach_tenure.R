@@ -75,13 +75,17 @@ dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
 dir.create("plots", showWarnings = FALSE)
 dir.create("output", showWarnings = FALSE)
 
-# Analysis window. CURRENT_SEASON is the season in progress; for model
-# *fitting* every stint is administratively censored at the end of
-# LAST_COMPLETE_SEASON: we know who survived it, but nobody has finished the
-# current season yet. To roll forward to a new season, bump both values and
-# add that offseason's coaching, GM and owner changes to data/research/.
-LAST_COMPLETE_SEASON <- 2025
-CURRENT_SEASON       <- 2026
+# Analysis window. The season settings are derived from the games data in
+# section 1a, so the script runs at any time of year:
+#   * LAST_COMPLETE_SEASON: the latest season whose Super Bowl has been played.
+#     For model *fitting*, every stint is administratively censored at its
+#     end: we know who survived it, nothing after.
+#   * CURRENT_SEASON = LAST_COMPLETE_SEASON + 1, in progress once it has
+#     results. The hot-seat ratings (section 7) only run then.
+# RESEARCH_THROUGH is the latest season whose preceding offseason changes
+# (coaches, GMs, owners) are recorded in data/research/. When the data moves
+# past it, the script warns that the research files need updating.
+RESEARCH_THROUGH <- 2026
 
 # Colours (checked for colour-vision-deficiency separation): blue, orange, aqua.
 pal <- c("#2a78d6", "#eb6834", "#1baf7a")
@@ -131,43 +135,42 @@ if (stale) {
   tmp <- tempfile(fileext = ".csv")
   ok <- tryCatch(download.file(games_url, tmp, mode = "wb", quiet = TRUE) == 0,
                  error = function(e) FALSE, warning = function(w) FALSE)
-  # Accept the download only if it looks like the games file (header has the
-  # columns this script uses); a proxy error page must not replace the cache.
-  needed_cols <- c("season", "game_type", "gameday", "home_team", "away_team",
+  # Accept the download only if it looks like the games file (its header has
+  # the columns this script uses); a proxy error page must not replace the
+  # cache. read_csv copes with a byte-order mark or quoted column names.
+  needed_cols <- c("season", "game_type", "gameday", "week", "home_team", "away_team",
                    "home_score", "away_score", "home_coach", "away_coach")
-  valid <- ok && file.size(tmp) > 0 &&
-    all(needed_cols %in% strsplit(readLines(tmp, n = 1, warn = FALSE), ",")[[1]])
-  if (valid && file.copy(tmp, games_file, overwrite = TRUE)) {
-    # refreshed
-  } else if (file.exists(games_file)) {
+  header <- if (ok) tryCatch(names(read_csv(tmp, n_max = 0, show_col_types = FALSE)),
+                             error = function(e) character()) else character()
+  copied <- all(needed_cols %in% header) && file.copy(tmp, games_file, overwrite = TRUE)
+  if (!copied) {
+    if (!file.exists(games_file)) stop("Could not download ", games_url)
     warning("Could not refresh ", games_url, "; using the cached copy from ",
             format(file.mtime(games_file), "%Y-%m-%d"))
-  } else {
-    stop("Could not download ", games_url)
   }
 }
 games <- read_csv(games_file, show_col_types = FALSE) |>
   filter(!is.na(home_score))                 # games already played
 
-# Guard the season settings against the data. CURRENT_SEASON must be the
-# season in progress: it must have started, it must not be over (its Super
-# Bowl unplayed), and no later season may have results yet.
-roll_forward <- paste0("Update the season settings in section 0 and add that ",
-                       "offseason's changes to data/research/.")
-if (LAST_COMPLETE_SEASON != CURRENT_SEASON - 1) {
-  stop("LAST_COMPLETE_SEASON should be CURRENT_SEASON - 1.")
+# Season settings (see section 0).
+latest_season        <- max(games$season)
+season_over          <- any(games$season == latest_season & games$game_type == "SB")
+LAST_COMPLETE_SEASON <- if (season_over) latest_season else latest_season - 1
+CURRENT_SEASON       <- LAST_COMPLETE_SEASON + 1
+season_in_progress   <- !season_over
+message("Last complete season: ", LAST_COMPLETE_SEASON, ". ",
+        if (season_in_progress) paste(CURRENT_SEASON, "is in progress.")
+        else paste("Offseason: no hot-seat ratings until", CURRENT_SEASON, "starts."))
+if (CURRENT_SEASON > RESEARCH_THROUGH) {
+  warning("The research files cover changes through the ", RESEARCH_THROUGH,
+          " offseason, but the data has reached ", CURRENT_SEASON, ". Add the ",
+          CURRENT_SEASON, " offseason's coach, GM and owner changes to ",
+          "data/research/ and update RESEARCH_THROUGH.", call. = FALSE)
 }
-if (any(games$season > CURRENT_SEASON)) {
-  stop("The games file has results from season ", max(games$season),
-       ", but CURRENT_SEASON is ", CURRENT_SEASON, ". ", roll_forward)
-}
-if (any(games$season == CURRENT_SEASON & games$game_type == "SB")) {
-  stop("The ", CURRENT_SEASON, " season is over (its Super Bowl has been ",
-       "played), so it can't be treated as in progress. ", roll_forward)
-}
-if (!any(games$season == CURRENT_SEASON)) {
-  stop("No ", CURRENT_SEASON, " games have been played yet. Run this once ",
-       "the season has started, or set CURRENT_SEASON to the season in progress.")
+if (season_in_progress && any(games$season == CURRENT_SEASON & games$game_type != "REG")) {
+  message("The ", CURRENT_SEASON, " regular season is over. Coaches who have ",
+          "left since need a row in data/research/coach_changes.csv to drop ",
+          "off the hot seat.")
 }
 
 relocated <- c(OAK = "LV", SD = "LAC", STL = "LA")   # one code per franchise
@@ -272,8 +275,10 @@ cts <- cts |>
   ungroup() |>
   mutate(stint_id = paste(coach, team, run, sep = "|"))
 
+# The coach of each team's most recent game. Without a departure record,
+# he's treated as still in the job (section 1e).
 current_coaches <- team_games |>
-  filter(season == CURRENT_SEASON) |>
+  filter(season == latest_season) |>
   slice_max(gameday, by = team, with_ties = FALSE) |>
   select(team, coach)
 
@@ -287,7 +292,7 @@ stints_all <- cts |>
             .groups = "drop") |>
   mutate(interim_before = any_start & first_season < hire_season,
          active = paste(coach, team) %in% paste(current_coaches$coach, current_coaches$team) &
-           last_season == CURRENT_SEASON)
+           last_season == latest_season)
 
 # Interim-only stints are kept in their own table and excluded from models.
 interim_stints <- stints_all |> filter(!any_start) |>
@@ -316,12 +321,15 @@ stints <- stints |>
     # sensitivity analysis at the end of section 3.
     forced = reason_category %in% c("fired", "mutual", "contract_expired") |
       (reason_category == "other" & str_detect(reason_raw, regex("reassign", TRUE))),
+    # A departure record always wins: a coach fired on Black Monday is still
+    # the credited coach of his team's last game, but he isn't active.
+    active = active & is.na(reason_category),
     event_type = case_when(
-      active                        ~ "active",
       forced                        ~ "fired",
       reason_category == "resigned" ~ "resigned",
       reason_category == "retired"  ~ "retired",
       !is.na(reason_category)       ~ "other",   # traded (Gruden 2002, Edwards 2006)
+      active                        ~ "active",
       TRUE                          ~ NA_character_),
     strict_fired = reason_category == "fired")
 
@@ -477,7 +485,8 @@ fit_data <- tenure |> filter(seasons > 0)  # new hires have no completed season
 cat("\nStints (hires 2000+):", nrow(tenure),
     "| used for fitting:", nrow(fit_data),
     "| interim-only stints excluded:", nrow(interim_stints), "\n")
-print(count(tenure, event_type))
+print(count(tenure, event_type, left_in_current_season))
+cat("Firings used in the models (status = 1):", sum(tenure$status), "\n")
 
 
 # ---- 2. Kaplan–Meier --------------------------------------------------------
@@ -699,87 +708,94 @@ p_ci <- ggplot(ci_df, aes(time, est, colour = cause, fill = cause)) +
 ggsave("plots/06_competing_risks.png", p_ci, width = 9, height = 5.5, dpi = 150)
 
 
-# ---- 7. Current coaches: model risk of firing after the 2026 season ---------
-# For each current head coach, build the row for his tenure season k = 2026
-# using the 2026 season *to date* ("if the season ended today"). The playoff
-# outcome isn't known yet, so we show two scenarios: misses / makes playoffs.
+# ---- 7. Current coaches: model risk of firing after the season in progress --
+# Runs only while a season is in progress. For each current head coach,
+# build the row for his tenure season k = CURRENT_SEASON using that season
+# *to date* ("if the season ended today"). The playoff outcome isn't known
+# yet, so we show two scenarios: misses / makes playoffs.
 #
 # P(fired after season k) = 1 − exp(−ΔH0(k) · exp(x'b)), where ΔH0(k) is the
 # Cox baseline hazard for tenure season k. Few coaches reach long tenures, so
 # ΔH0 is pooled (averaged) for seasons 8 and later. We use the split model
 # from section 5, since it satisfies the proportional-hazards assumption.
 
-bh <- basehaz(cox_tv_split, centered = FALSE) |>
-  as_tibble() |>
-  mutate(k = time, dH0 = hazard - lag(hazard, default = 0)) |>
-  select(k, dH0)
-bh <- tibble(k = 1:40) |> left_join(bh, by = "k") |>
-  mutate(dH0 = coalesce(dH0, 0))
-tail_rate <- mean(bh$dH0[bh$k >= 8 & bh$k <= max(tv_data$tstop)])
-bh <- bh |> mutate(dH0 = if_else(k >= 8, tail_rate, dH0))
+if (season_in_progress) {
+  bh <- basehaz(cox_tv_split, centered = FALSE) |>
+    as_tibble() |>
+    mutate(k = time, dH0 = hazard - lag(hazard, default = 0)) |>
+    select(k, dH0)
+  bh <- tibble(k = 1:40) |> left_join(bh, by = "k") |>
+    mutate(dH0 = coalesce(dH0, 0))
+  tail_rate <- mean(bh$dH0[bh$k >= 8 & bh$k <= max(tv_data$tstop)])
+  bh <- bh |> mutate(dH0 = if_else(k >= 8, tail_rate, dH0))
 
-# Five or six games are a noisy sample, and the model was fit on full
-# seasons: plugging in a raw 0-5 would treat it like 0-17. So the 2026 inputs
-# are a *projected* full season: actual results so far, plus .500 football
-# and an even point differential over the remaining games of 17.
-SEASON_GAMES <- 17
-current <- coach_seasons |>
-  filter(season == CURRENT_SEASON) |>
-  semi_join(current_coaches, by = c("coach", "team")) |>
-  left_join(stints |> select(stint_id, age_at_hire, prior_hc), by = "stint_id") |>
-  mutate(win_pct_to_date = win_pct,
-         win_pct        = (w + 0.5 * t + 0.5 * (SEASON_GAMES - g_reg)) / SEASON_GAMES,
-         win_pct_change = win_pct - prev_team_win_pct,
-         pd_per_game    = (pf - pa) / SEASON_GAMES,
-         win10 = win_pct * 10, win_chg10 = win_pct_change * 10,
-         age5 = age_at_hire / 5) |>
-  split_chg() |>
-  left_join(bh, by = c("tenure_season" = "k"))
+  # Five or six games are a noisy sample, and the model was fit on full
+  # seasons: plugging in a raw 0-5 would treat it like 0-17. So the inputs
+  # are a *projected* full season: actual results so far, plus .500 football
+  # and an even point differential over the remaining games of 17.
+  SEASON_GAMES <- 17
+  current <- coach_seasons |>
+    filter(season == CURRENT_SEASON) |>
+    semi_join(stints |> filter(active), by = "stint_id") |>   # still in the job
+    left_join(stints |> select(stint_id, age_at_hire, prior_hc), by = "stint_id") |>
+    mutate(win_pct_to_date = win_pct,
+           win_pct        = (w + 0.5 * t + 0.5 * (SEASON_GAMES - g_reg)) / SEASON_GAMES,
+           win_pct_change = win_pct - prev_team_win_pct,
+           pd_per_game    = (pf - pa) / SEASON_GAMES,
+           win10 = win_pct * 10, win_chg10 = win_pct_change * 10,
+           age5 = age_at_hire / 5) |>
+    split_chg() |>
+    left_join(bh, by = c("tenure_season" = "k"))
 
-risk_for <- function(df, playoff_value) {
-  nd <- df |> mutate(playoff = playoff_value)
-  lp <- predict(cox_tv_split, newdata = nd, type = "lp", reference = "zero")
-  1 - exp(-nd$dH0 * exp(lp))
+  risk_for <- function(df, playoff_value) {
+    nd <- df |> mutate(playoff = playoff_value)
+    lp <- predict(cox_tv_split, newdata = nd, type = "lp", reference = "zero")
+    1 - exp(-nd$dH0 * exp(lp))
+  }
+
+  risk <- current |>
+    mutate(record = paste0(w, "-", l, if_else(t > 0, paste0("-", t), "")),
+           p_fired_if_miss    = risk_for(current, FALSE),
+           p_fired_if_playoff = risk_for(current, TRUE)) |>
+    arrange(desc(p_fired_if_miss)) |>
+    transmute(coach, team, season_number = tenure_season, record,
+              games_played = g_reg,
+              proj_win_pct = round(win_pct, 3),
+              proj_win_pct_change = round(win_pct_change, 3),
+              pd_to_date = pf - pa,
+              new_gm_or_owner, prior_hc,
+              p_fired_if_miss = round(p_fired_if_miss, 3),
+              p_fired_if_playoff = round(p_fired_if_playoff, 3))
+
+  write_csv(risk, paste0("output/current_coach_risk_", CURRENT_SEASON, ".csv"))
+  cat("\n== Model-estimated probability of being fired after", CURRENT_SEASON, "==\n")
+  cat("(projected season: results to date + .500 the rest of the way; estimates, not forecasts)\n")
+  print(risk, n = 32)
+
+  p_risk <- risk |>
+    mutate(label = paste0(coach, " (", team, ", ", record, ")"),
+           label = fct_reorder(label, p_fired_if_miss)) |>
+    ggplot(aes(y = label)) +
+    geom_segment(aes(x = p_fired_if_playoff, xend = p_fired_if_miss, yend = label),
+                 colour = "grey75", linewidth = 0.8) +
+    geom_point(aes(x = p_fired_if_playoff, colour = "Makes playoffs"), size = 2.6) +
+    geom_point(aes(x = p_fired_if_miss, colour = "Misses playoffs"), size = 2.6) +
+    scale_colour_manual(values = c("Makes playoffs" = pal[1], "Misses playoffs" = pal[2]),
+                        name = NULL) +
+    scale_x_continuous(labels = scales::percent) +
+    labs(title = paste("Model-estimated chance of being fired after the", CURRENT_SEASON, "season"),
+         subtitle = paste("Time-varying Cox model.", CURRENT_SEASON,
+                          "= results to date + .500 the rest of the way. Model estimates, not predictions."),
+         x = "Estimated probability", y = NULL) +
+    theme(legend.position = "top", legend.justification = "left",
+          panel.grid.major.y = element_blank())
+  ggsave("plots/07_current_coach_risk.png", p_risk, width = 9, height = 9, dpi = 150)
+} else {
+  # No season in progress: clear ratings left over from an earlier run.
+  risk <- NULL
+  unlink(c("plots/07_current_coach_risk.png",
+           Sys.glob("output/current_coach_risk_*.csv")))
 }
-
-risk <- current |>
-  mutate(record = paste0(w, "-", l, if_else(t > 0, paste0("-", t), "")),
-         p_fired_if_miss    = risk_for(current, FALSE),
-         p_fired_if_playoff = risk_for(current, TRUE)) |>
-  arrange(desc(p_fired_if_miss)) |>
-  transmute(coach, team, season_number = tenure_season, record,
-            games_played = g_reg,
-            proj_win_pct = round(win_pct, 3),
-            proj_win_pct_change = round(win_pct_change, 3),
-            pd_to_date = pf - pa,
-            new_gm_or_owner, prior_hc,
-            p_fired_if_miss = round(p_fired_if_miss, 3),
-            p_fired_if_playoff = round(p_fired_if_playoff, 3))
-
-write_csv(risk, paste0("output/current_coach_risk_", CURRENT_SEASON, ".csv"))
-cat("\n== Model-estimated probability of being fired after", CURRENT_SEASON, "==\n")
-cat("(projected season: results to date + .500 the rest of the way; estimates, not forecasts)\n")
-print(risk, n = 32)
-
-p_risk <- risk |>
-  mutate(label = paste0(coach, " (", team, ", ", record, ")"),
-         label = fct_reorder(label, p_fired_if_miss)) |>
-  ggplot(aes(y = label)) +
-  geom_segment(aes(x = p_fired_if_playoff, xend = p_fired_if_miss, yend = label),
-               colour = "grey75", linewidth = 0.8) +
-  geom_point(aes(x = p_fired_if_playoff, colour = "Makes playoffs"), size = 2.6) +
-  geom_point(aes(x = p_fired_if_miss, colour = "Misses playoffs"), size = 2.6) +
-  scale_colour_manual(values = c("Makes playoffs" = pal[1], "Misses playoffs" = pal[2]),
-                      name = NULL) +
-  scale_x_continuous(labels = scales::percent) +
-  labs(title = paste("Model-estimated chance of being fired after the", CURRENT_SEASON, "season"),
-       subtitle = paste("Time-varying Cox model.", CURRENT_SEASON,
-                        "= results to date + .500 the rest of the way. Model estimates, not predictions."),
-       x = "Estimated probability", y = NULL) +
-  theme(legend.position = "top", legend.justification = "left",
-        panel.grid.major.y = element_blank())
-ggsave("plots/07_current_coach_risk.png", p_risk, width = 9, height = 9, dpi = 150)
-
 
 
 # ---- 8. Self-contained HTML report -------------------------------------------
@@ -856,8 +872,9 @@ cif      <- timepoints(ci, times = c(2, 4, 6, 8))$est
 zph_tv   <- cox.zph(cox_tv, transform = "km")
 zph_spl  <- cox.zph(cox_tv_split, transform = "km")
 hr_tv    <- summary(cox_tv)$conf.int
-data_through <- max(team_games$gameday[team_games$season == CURRENT_SEASON])
-week_through <- max(games$week[games$season == CURRENT_SEASON & games$game_type == "REG"])
+data_through <- max(team_games$gameday)
+week_through <- if (season_in_progress)
+  max(games$week[games$season == CURRENT_SEASON & games$game_type == "REG"]) else NA
 n_fired  <- sum(fit_data$status)
 n_fired_after_playoffs <- sum(tv_data$fired_after == 1 & tv_data$playoff)
 
@@ -888,17 +905,22 @@ stat <- function(value, label) {
 hero <- paste0(
   '<header class="hero"><div class="hero-inner">',
   sprintf('<p class="kicker">Survival analysis &middot; Head coaches hired %d&ndash;%d</p>',
-          min(tenure$hire_season), CURRENT_SEASON),
+          min(tenure$hire_season), max(tenure$hire_season)),
   "<h1>How long do NFL head coaches last?</h1>",
-  sprintf('<p class="hero-sub">%d coaching stints, %d firings, and the model&rsquo;s read on who&rsquo;s on the hot seat after %d. Data through week %d (%s).</p>',
-          nrow(tenure), n_fired, CURRENT_SEASON, week_through, long_date(data_through)),
+  if (season_in_progress) {
+    sprintf('<p class="hero-sub">%d coaching stints, %d firings, and the model&rsquo;s read on who&rsquo;s on the hot seat after %d. Data through week %d (%s).</p>',
+            nrow(tenure), n_fired, CURRENT_SEASON, week_through, long_date(data_through))
+  } else {
+    sprintf('<p class="hero-sub">%d coaching stints and %d firings. Data through the end of the %d season (%s).</p>',
+            nrow(tenure), n_fired, LAST_COMPLETE_SEASON, long_date(data_through))
+  },
   '<div class="scoreboard">',
   stat(km_tab[["median"]], "Median seasons until a coach is fired"),
   stat(pct(cif["Fired", "4"]), "Fired by the end of season 4"),
   stat(paste0("&minus;", pct(1 - hr_tv["win10", "exp(coef)"])), "Firing risk per +10 pts of win %"),
   stat(paste0("&minus;", pct(1 - hr_tv["playoffTRUE", "exp(coef)"])), "Firing risk after a playoff season"),
   "</div>",
-  '<a class="cta" href="#hot-seat">See the hot seat &rarr;</a>',
+  if (season_in_progress) '<a class="cta" href="#hot-seat">See the hot seat &rarr;</a>' else "",
   "</div></header>")
 
 nav <- paste0(
@@ -911,7 +933,7 @@ nav <- paste0(
 ## Sections -------------------------------------------------------------------
 sec_data <- section("data", "00", "The data",
   sprintf("<p>%d permanent head-coaching stints began in 2000&ndash;%d; %d have at least one completed season and are used for fitting. %d interim-only stints are excluded.</p>",
-          nrow(tenure), CURRENT_SEASON, nrow(fit_data), nrow(interim_stints)),
+          nrow(tenure), max(tenure$hire_season), nrow(fit_data), nrow(interim_stints)),
   '<div class="grid2">',
   '<div class="card pad"><h3>Sources</h3><ul>',
   '<li><strong>Games and coaches:</strong> <a href="https://github.com/nflverse/nfldata">nflverse</a> results with the credited head coach, corrected for mid-season changes using Wikipedia departure dates.</li>',
@@ -981,40 +1003,47 @@ sec_cr <- section("exits", "05", "How tenures end",
 ## Hot seat: spotlight cards + full board with risk bars -------------------------
 ordinal <- function(n) paste0(n, ifelse(n %% 100 %in% 11:13, "th",
                                          c("th", "st", "nd", "rd", rep("th", 6))[n %% 10 + 1]))
-spot <- risk |> slice_head(n = 3)
-spotlight <- paste0('<div class="spotlight">', paste0(
-  sprintf('<div class="spot"><div class="spot-rank">#%d</div><div class="spot-name">%s</div><div class="spot-meta">%s &middot; %s season &middot; %s</div><div class="spot-num">%s</div><div class="spot-label">if they miss the playoffs</div><div class="spot-alt">%s if they make it</div></div>',
-          seq_len(nrow(spot)), esc(spot$coach), esc(spot$team), ordinal(spot$season_number),
-          esc(spot$record), pct(spot$p_fired_if_miss), pct(spot$p_fired_if_playoff)),
-  collapse = ""), "</div>")
+if (season_in_progress) {
+  spot <- risk |> slice_head(n = 3)
+  spotlight <- paste0('<div class="spotlight">', paste0(
+    sprintf('<div class="spot"><div class="spot-rank">#%d</div><div class="spot-name">%s</div><div class="spot-meta">%s &middot; %s season &middot; %s</div><div class="spot-num">%s</div><div class="spot-label">if they miss the playoffs</div><div class="spot-alt">%s if they make it</div></div>',
+            seq_len(nrow(spot)), esc(spot$coach), esc(spot$team), ordinal(spot$season_number),
+            esc(spot$record), pct(spot$p_fired_if_miss), pct(spot$p_fired_if_playoff)),
+    collapse = ""), "</div>")
 
-bar_max <- max(risk$p_fired_if_miss)
-board_rows <- sprintf(
-  '<tr><td class="num rank">%d</td><td><strong>%s</strong></td><td><span class="team">%s</span></td><td class="num">%d</td><td class="num">%s</td><td class="num">%s</td><td class="barcell"><div class="bar"><span style="width:%.1f%%"></span></div><b>%s</b></td><td class="num muted">%s</td></tr>',
-  seq_len(nrow(risk)), esc(risk$coach), esc(risk$team), risk$season_number,
-  esc(risk$record), num(risk$proj_win_pct, 3),
-  100 * risk$p_fired_if_miss / bar_max, pct(risk$p_fired_if_miss), pct(risk$p_fired_if_playoff))
-board <- paste0(
-  '<div class="table-wrap card"><table class="board"><thead><tr>',
-  '<th class="num">#</th><th>Coach</th><th>Team</th><th class="num">Season</th><th class="num">Record</th>',
-  '<th class="num">Proj. win %</th><th>If team misses playoffs</th><th class="num">If makes</th>',
-  "</tr></thead><tbody>", paste(board_rows, collapse = ""), "</tbody></table></div>")
+  bar_max <- max(risk$p_fired_if_miss)
+  board_rows <- sprintf(
+    '<tr><td class="num rank">%d</td><td><strong>%s</strong></td><td><span class="team">%s</span></td><td class="num">%d</td><td class="num">%s</td><td class="num">%s</td><td class="barcell"><div class="bar"><span style="width:%.1f%%"></span></div><b>%s</b></td><td class="num muted">%s</td></tr>',
+    seq_len(nrow(risk)), esc(risk$coach), esc(risk$team), risk$season_number,
+    esc(risk$record), num(risk$proj_win_pct, 3),
+    100 * risk$p_fired_if_miss / bar_max, pct(risk$p_fired_if_miss), pct(risk$p_fired_if_playoff))
+  board <- paste0(
+    '<div class="table-wrap card"><table class="board"><thead><tr>',
+    '<th class="num">#</th><th>Coach</th><th>Team</th><th class="num">Season</th><th class="num">Record</th>',
+    '<th class="num">Proj. win %</th><th>If team misses playoffs</th><th class="num">If makes</th>',
+    "</tr></thead><tbody>", paste(board_rows, collapse = ""), "</tbody></table></div>")
 
-# Teams playing this season whose current coach has no rating: an interim
-# coach, or a departure not yet in the research file (see section 1e).
-unrated <- current_coaches |> anti_join(risk, by = c("team", "coach"))
-unrated_note <- if (nrow(unrated) == 0) "" else sprintf(
-  '<p class="small">Not rated: %s. Interim coaches, and coaches whose predecessor left without a departure record yet, have no model row.</p>',
-  paste0(esc(unrated$team), " (", esc(unrated$coach), ")", collapse = ", "))
+  # Teams whose latest-game coach has no rating: an interim coach, a coach
+  # who has already left (departure recorded), or a departure not yet in the
+  # research file (see section 1e).
+  unrated <- current_coaches |> anti_join(risk, by = c("team", "coach"))
+  unrated_note <- if (nrow(unrated) == 0) "" else sprintf(
+    '<p class="small">Not rated: %s. Interim coaches, coaches who have already left, and coaches whose predecessor left without a departure record yet have no model row.</p>',
+    paste0(esc(unrated$team), " (", esc(unrated$coach), ")", collapse = ", "))
 
-sec_now <- section("hot-seat", "06", sprintf("The hot seat: risk of being fired after %d", CURRENT_SEASON),
-  sprintf("<p>Each team&rsquo;s %d season is projected from results through week %d plus .500 football and an even point differential the rest of the way. Playoffs aren&rsquo;t decided, so each coach gets two numbers.</p>",
-          CURRENT_SEASON, week_through),
-  spotlight,
-  '<p class="note"><strong>Model estimates, not predictions.</strong> The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries or owner temperament, and the baseline risk for very long tenures is pooled and imprecise.</p>',
-  board,
-  unrated_note,
-  img("plots/07_current_coach_risk.png", "Estimated chance each current coach is fired after the season"))
+  sec_now <- section("hot-seat", "06", sprintf("The hot seat: risk of being fired after %d", CURRENT_SEASON),
+    sprintf("<p>Each team&rsquo;s %d season is projected from results through week %d plus .500 football and an even point differential the rest of the way. Playoffs aren&rsquo;t decided, so each coach gets two numbers.</p>",
+            CURRENT_SEASON, week_through),
+    spotlight,
+    '<p class="note"><strong>Model estimates, not predictions.</strong> The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries or owner temperament, and the baseline risk for very long tenures is pooled and imprecise.</p>',
+    board,
+    unrated_note,
+    img("plots/07_current_coach_risk.png", "Estimated chance each current coach is fired after the season"))
+} else {
+  sec_now <- section("hot-seat", "06", "The hot seat",
+    sprintf('<div class="card pad"><p>No season is in progress. Ratings for the %d season return once it kicks off.</p></div>',
+            CURRENT_SEASON))
+}
 
 sec_lim <- section("limits", "07", "Limitations",
   '<div class="card pad"><ul>',

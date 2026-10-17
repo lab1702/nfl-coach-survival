@@ -26,7 +26,7 @@ Rscript coach_tenure.R
 
 It takes about 30 seconds. On first run, and whenever the cached copy is more than a day old, it downloads the nflverse games file into `data/raw/`. A download that fails, or doesn't look like the games file, never replaces the cached copy.
 
-The script is meant to run while a season is in progress. It stops with instructions if the season settings don't match the data: before the season starts, after its Super Bowl, or once a later season has results.
+It runs at any time of year. The season settings come from the data: the last complete season is the latest one whose Super Bowl has been played, and the next season counts as in progress once it has results. The hot-seat ratings only appear while a season is in progress; in the offseason the report says when they'll return.
 
 ## Outputs
 
@@ -55,10 +55,14 @@ Every research row carries its source URL. The research files are current as of 
 
 ## Updating for a new season
 
-1. In section 0 of the script, set `CURRENT_SEASON` to the new season and `LAST_COMPLETE_SEASON` to the one just finished.
-2. Add that offseason's head-coach departures to `coach_changes.csv`, and any GM or owner changes to their files.
+The season rolls forward on its own. What needs updating by hand is the research:
 
-A coach who leaves during the current season is censored until that season ends (`left_in_current_season` is `TRUE` and `status` is 0). If his departure isn't in `coach_changes.csv` yet, the script warns, and the report lists his team as not rated. Adding the record also lets the script credit the right coach for the games after the change.
+1. Add each offseason's head-coach departures to `coach_changes.csv`, and any GM or owner changes to their files.
+2. Set `RESEARCH_THROUGH` in section 0 of the script to the season whose offseason you just covered. The script warns when the data has moved past it.
+
+Departures matter most. A coach fired after the season is still credited with his team's last game, so until his row is in `coach_changes.csv` he counts as still in the job. Once it's there he drops off the hot seat; the record always wins over the game data.
+
+A coach who leaves during the season in progress is censored until that season ends (`left_in_current_season` is `TRUE` and `status` is 0). If his departure isn't recorded yet, the script warns and the report lists his team as not rated. Adding the record also lets the script credit the right coach for the games after the change.
 
 ## Caveats
 
