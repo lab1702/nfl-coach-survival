@@ -1,0 +1,46 @@
+# Serves the HTML report and refreshes it once a day.
+#
+#   docker compose up -d --build
+#   open http://localhost:8080   (PORT=... to change)
+#
+# Settings (environment or a .env file next to this one):
+#   PORT          host port for the web server (default 8080)
+#   TZ            time zone for the schedule (default UTC)
+#   REFRESH_TIME  daily run time, HH:MM in TZ (default 10:00)
+
+services:
+  refresh:
+    build: .
+    image: nfl-coach-tenure:latest
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      REFRESH_TIME: ${REFRESH_TIME:-10:00}
+    volumes:
+      # Research files are mounted live, so edits don't need a rebuild.
+      - ./data/research:/app/data/research:ro
+      - games-cache:/app/data/raw
+      - output:/app/output
+      - site:/site
+
+  web:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:80"
+    volumes:
+      # nocopy: don't seed the shared volume with nginx's default page; it
+      # starts empty and owned by the refresh job's user.
+      - type: volume
+        source: site
+        target: /usr/share/nginx/html
+        read_only: true
+        volume:
+          nocopy: true
+    depends_on:
+      - refresh
+
+volumes:
+  games-cache:
+  output:
+  site:

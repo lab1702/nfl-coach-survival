@@ -1,0 +1,10 @@
+# Keep the build context to what the image needs.
+.git
+.claude
+data/raw
+data/*.csv
+output
+plots
+*.md
+compose.yaml
+.env

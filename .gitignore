@@ -17,3 +17,6 @@ Rplots.pdf
 # Local tool and OS files
 .claude/
 .DS_Store
+
+# Local Docker Compose settings
+.env

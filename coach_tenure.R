@@ -125,11 +125,15 @@ name_key <- function(x) {
 
 ## 1a. Game results with the credited head coach ------------------------------
 # The file updates weekly in season, so a cached copy older than a day is
-# re-downloaded. If the download fails, an existing copy is used instead.
+# re-downloaded (GAMES_MAX_AGE_HOURS overrides the limit; the Docker refresh
+# job sets it to 0 to always refresh). If the download fails, an existing
+# copy is used instead.
 games_url  <- "https://github.com/nflverse/nfldata/raw/master/data/games.csv"
 games_file <- "data/raw/games.csv"
+max_age_hours <- suppressWarnings(as.numeric(Sys.getenv("GAMES_MAX_AGE_HOURS", "24")))
+if (is.na(max_age_hours)) max_age_hours <- 24
 stale <- !file.exists(games_file) ||
-  difftime(Sys.time(), file.mtime(games_file), units = "hours") > 24
+  difftime(Sys.time(), file.mtime(games_file), units = "hours") >= max_age_hours
 if (stale) {
   tmp <- tempfile(fileext = ".csv")
   ok <- tryCatch(download.file(games_url, tmp, mode = "wb", quiet = TRUE) == 0,
