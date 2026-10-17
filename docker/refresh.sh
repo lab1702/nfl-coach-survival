@@ -37,6 +37,13 @@ if ! [[ "$RETRY_MINUTES" =~ ^[0-9]+$ && "$MAX_RETRIES" =~ ^[0-9]+$ ]]; then
   echo "RETRY_MINUTES and MAX_RETRIES must be whole numbers" >&2
   exit 1
 fi
+# Read as base 10: bash arithmetic treats a leading zero ("08") as octal.
+RETRY_MINUTES=$(( 10#$RETRY_MINUTES ))
+MAX_RETRIES=$(( 10#$MAX_RETRIES ))
+if (( RETRY_MINUTES < 1 )); then
+  echo "RETRY_MINUTES must be at least 1" >&2
+  exit 1
+fi
 
 # Something to serve before the first run finishes.
 if [[ ! -f "$SITE/index.html" ]]; then

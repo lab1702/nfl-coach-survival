@@ -73,7 +73,7 @@ suppressPackageStartupMessages({
   library(survival)
   library(survminer)
   library(cmprsk)
-  for (p in tidy_pkgs) library(p, character.only = TRUE)
+  invisible(lapply(tidy_pkgs, library, character.only = TRUE))
 })
 
 # Record the versions behind this run, so results can be traced to them.

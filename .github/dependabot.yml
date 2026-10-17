@@ -1,0 +1,13 @@
+# Keeps the digest-pinned base images current: Dependabot opens a pull
+# request when a newer image is published for the pinned tag (security
+# fixes included), so updates are reviewed rather than silent.
+version: 2
+updates:
+  - package-ecosystem: docker          # FROM line in Dockerfile
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker-compose  # nginx image in compose.yaml
+    directory: /
+    schedule:
+      interval: weekly

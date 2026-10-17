@@ -40,11 +40,11 @@ docker compose up -d --build
 
 - **Schedule.** The daily run time is `REFRESH_TIME` (HH:MM, default `10:00`) in the time zone `TZ` (default `UTC`). The host port is `PORT` (default `8080`). Set these in the environment or a `.env` file.
 - **Fresh data.** Each run downloads the latest games file. If the download fails, it falls back to the cached copy.
-- **Failed runs.** The report is replaced only when a run succeeds; a failed run leaves the previous one in place. It's retried every `RETRY_MINUTES` (default 60), up to `MAX_RETRIES` times (default 6), before waiting for the next daily run. Check `docker compose logs refresh` for what happened.
+- **Failed runs.** The report is replaced only when a run succeeds; a failed run leaves the previous one in place. It's retried every `RETRY_MINUTES` (default 60, at least 1), up to `MAX_RETRIES` times (default 6), before waiting for the next daily run. Check `docker compose logs refresh` for what happened.
 - **Research files.** `data/research/` is mounted read-only from this folder, so edits take effect on the next run without a rebuild. Changes to `coach_tenure.R` need `docker compose up -d --build`.
 - **Volumes.** The games cache, the run log and the published page live in named volumes. `docker compose down -v` removes them.
 
-The image installs R and only the packages the script uses from Ubuntu's `r-cran-*` packages. Both base images (Ubuntu 26.04 and nginx) are pinned by digest, so a rebuild starts from the same images; to update them, pull the tags and replace the digests in `Dockerfile` and `compose.yaml`. Each run's log (`output/run_log.txt` in the `output` volume) starts with the R and package versions it used.
+The image installs R and only the packages the script uses from Ubuntu's `r-cran-*` packages. Both base images (Ubuntu 26.04 and nginx) are pinned by digest, so a rebuild starts from the same images. Pinning also holds back their security fixes, so `.github/dependabot.yml` checks weekly and opens a pull request when a newer image is published for either tag. Without GitHub, update by hand: pull the tags and replace the digests in `Dockerfile` and `compose.yaml`. Each run's log (`output/run_log.txt` in the `output` volume) starts with the R and package versions it used.
 
 ## Outputs
 
