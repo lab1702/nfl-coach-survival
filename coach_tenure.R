@@ -311,24 +311,23 @@ if (regular_season_over) {
   n_byes     <- field_size - length(post_teams(LAST_COMPLETE_SEASON, "WC"))
   wc_teams   <- post_teams(CURRENT_SEASON, "WC")
 
-  # Divisions come from the data: teams that play each other in division
-  # games (div_game == 1) this season form a division. Label propagation:
-  # every team ends up with the smallest label among its division rivals.
+  # Divisions come from the data: every team plays all its division rivals
+  # (div_game == 1), so a team plus its division opponents names its
+  # division. The result is used only if it's consistent: every division the
+  # same size (3+ teams) and every member listing exactly the same rivals.
+  # A missing or wrong flag would break that, and then the bye inference is
+  # skipped rather than trusting a bad grouping.
   division <- character()
   if ("div_game" %in% names(games_all)) {
     dg <- cur_reg |>
       filter(div_game == 1) |>
       transmute(a = franchise(home_team), b = franchise(away_team))
-    teams <- sort(unique(c(dg$a, dg$b)))
-    label <- setNames(seq_along(teams), teams)
-    repeat {
-      m <- pmin(label[dg$a], label[dg$b])
-      new <- label
-      new[] <- pmin(label, tapply(c(m, m), c(dg$a, dg$b), min)[names(label)])
-      if (identical(new, label)) break
-      label <- new
-    }
-    division <- setNames(paste0("div", label), names(label))
+    keys <- bind_rows(dg, tibble(a = dg$b, b = dg$a)) |>
+      summarise(key = paste(sort(unique(c(first(a), b))), collapse = "-"), .by = a)
+    sizes <- table(keys$key)
+    consistent <- length(sizes) > 0 && length(unique(sizes)) == 1 && all(sizes >= 3) &&
+      all(sizes == lengths(strsplit(names(sizes), "-")))
+    if (consistent) division <- setNames(keys$key, keys$a)
   }
   standings <- team_season |>
     filter(season == CURRENT_SEASON) |>
