@@ -37,10 +37,13 @@
 # (slice_max(by =)), ggplot2 >= 3.4.0 (linewidth), readr >= 2.0.0
 # (show_col_types). Section 0 checks these before anything runs.
 #
-# Package substitutions: none were needed. Everything used (survival,
-# survminer, tidyverse, cmprsk, base64enc, htmltools) is installed. cmprsk
-# computes the competing-risks cumulative incidence; base64enc and htmltools
-# embed the plots and escape text in the HTML report (no pandoc needed).
+# Package substitutions: none were needed. Everything used is installed:
+# survival, survminer, cmprsk, base64enc, htmltools, and the tidyverse
+# packages dplyr, readr, ggplot2, stringr, forcats, purrr, tibble and
+# lubridate (loaded individually rather than through the tidyverse
+# metapackage, so a deployment only needs these). cmprsk computes the
+# competing-risks cumulative incidence; base64enc and htmltools embed the
+# plots and escape text in the HTML report (no pandoc needed).
 # =============================================================================
 
 
@@ -48,7 +51,9 @@
 
 if (getRversion() < "4.1.0") stop("This script needs R 4.1.0 or later.")
 
-needed <- c("survival", "survminer", "tidyverse", "cmprsk", "base64enc", "htmltools")
+tidy_pkgs <- c("dplyr", "readr", "ggplot2", "stringr", "forcats", "purrr",
+               "tibble", "lubridate")
+needed <- c("survival", "survminer", "cmprsk", "base64enc", "htmltools", tidy_pkgs)
 missing_pkgs <- setdiff(needed, rownames(installed.packages()))
 if (length(missing_pkgs) > 0) {
   stop("These packages are not installed (and this script will not install ",
@@ -67,9 +72,13 @@ if (length(too_old) > 0) {
 suppressPackageStartupMessages({
   library(survival)
   library(survminer)
-  library(tidyverse)
   library(cmprsk)
+  for (p in tidy_pkgs) library(p, character.only = TRUE)
 })
+
+# Record the versions behind this run, so results can be traced to them.
+message("R ", getRversion(), "; ",
+        paste0(needed, " ", sapply(needed, \(p) format(packageVersion(p))), collapse = ", "))
 
 dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
 dir.create("plots", showWarnings = FALSE)
@@ -877,8 +886,8 @@ if (season_in_progress) {
       geom_point(size = 2.8) +
       scale_colour_manual(values = c("Made playoffs" = pal[1], "Missed playoffs" = pal[2]),
                           name = NULL) +
-      labs(subtitle = paste("Time-varying Cox model, using each team's final", CURRENT_SEASON,
-                            "record and playoff result. Model estimates, not predictions."))
+      labs(subtitle = paste0("Time-varying Cox model, using each team's final ", CURRENT_SEASON,
+                             " record and playoff result.\nModel estimates, not predictions."))
   } else {
     p_risk <- ggplot(risk_plot, aes(y = label)) +
       geom_segment(aes(x = p_fired_if_playoff, xend = p_fired_if_miss, yend = label),
@@ -887,8 +896,8 @@ if (season_in_progress) {
       geom_point(aes(x = p_fired_if_miss, colour = "Misses playoffs"), size = 2.6) +
       scale_colour_manual(values = c("Makes playoffs" = pal[1], "Misses playoffs" = pal[2]),
                           name = NULL) +
-      labs(subtitle = paste("Time-varying Cox model.", CURRENT_SEASON,
-                            "= results to date + .500 the rest of the way. Model estimates, not predictions."))
+      labs(subtitle = paste0("Time-varying Cox model. ", CURRENT_SEASON,
+                             " = results to date + .500 the rest of the way.\nModel estimates, not predictions."))
   }
   p_risk <- p_risk +
     scale_x_continuous(labels = scales::percent) +

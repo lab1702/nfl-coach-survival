@@ -7,15 +7,20 @@
 #   PORT          host port for the web server (default 8080)
 #   TZ            time zone for the schedule (default UTC)
 #   REFRESH_TIME  daily run time, HH:MM in TZ (default 10:00)
+#   RETRY_MINUTES minutes between retries after a failed run (default 60)
+#   MAX_RETRIES   retries before waiting for the next daily run (default 6)
 
 services:
   refresh:
     build: .
     image: nfl-coach-tenure:latest
     restart: unless-stopped
+    init: true   # forwards stop signals and reaps child processes
     environment:
       TZ: ${TZ:-UTC}
       REFRESH_TIME: ${REFRESH_TIME:-10:00}
+      RETRY_MINUTES: ${RETRY_MINUTES:-60}
+      MAX_RETRIES: ${MAX_RETRIES:-6}
     volumes:
       # Research files are mounted live, so edits don't need a rebuild.
       - ./data/research:/app/data/research:ro
@@ -24,7 +29,8 @@ services:
       - site:/site
 
   web:
-    image: nginx:1.27-alpine
+    # Pinned by digest for reproducible deployments (nginx:1.27-alpine).
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: unless-stopped
     ports:
       - "${PORT:-8080}:80"
