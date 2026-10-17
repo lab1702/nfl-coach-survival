@@ -262,73 +262,75 @@ team_season <- team_games |>
   summarise(team_win_pct = mean((pf > pa) + 0.5 * (pf == pa)), .groups = "drop")
 
 ## 1c'. Playoff qualification for the season in progress (used by section 7)
-# Teams in a season's playoff games, scheduled or played. Only codes that
-# also appear in that season's regular season count, so placeholder rows for
-# games whose teams aren't known yet are ignored.
-post_teams <- function(s, types = c("WC", "DIV", "CON", "SB")) {
+# A season's playoff games, scheduled or played, keeping only rows whose two
+# teams also played that regular season, so placeholder rows for games whose
+# teams aren't known yet are ignored.
+post_games <- function(s, types = c("WC", "DIV", "CON", "SB")) {
   g   <- games_all |> filter(season == s)
   reg <- franchise(c(g$home_team[g$game_type == "REG"], g$away_team[g$game_type == "REG"]))
-  p   <- g |> filter(game_type %in% types)
-  intersect(unique(franchise(c(p$home_team, p$away_team))), reg)
+  g |>
+    filter(game_type %in% types) |>
+    mutate(home_team = franchise(home_team), away_team = franchise(away_team)) |>
+    filter(home_team %in% reg, away_team %in% reg)
 }
-cur_post <- games_all |> filter(season == CURRENT_SEASON, game_type != "REG")
-cur_reg  <- games_all |> filter(season == CURRENT_SEASON, game_type == "REG")
+post_teams <- function(s, types = c("WC", "DIV", "CON", "SB")) {
+  p <- post_games(s, types)
+  unique(c(p$home_team, p$away_team))
+}
 
-# The regular season is over once the data reaches its last scheduled
-# gameday, or once wild-card games are on the schedule. (Requiring a score
-# for every game would hang on a postponed game that never gets played.)
+# The regular season is over once every game on its last scheduled gameday
+# has a score, or once wild-card games are on the schedule. (Only the last
+# day is checked: a postponed game that never gets played mustn't hang this.)
+cur_reg  <- games_all |> filter(season == CURRENT_SEASON, game_type == "REG")
+wc       <- post_games(CURRENT_SEASON, "WC")
+last_day <- if (nrow(cur_reg) > 0) max(as.Date(cur_reg$gameday)) else NA
 regular_season_over <- season_in_progress && nrow(cur_reg) > 0 &&
-  (max(as.Date(cur_reg$gameday)) <= max(games$gameday) || any(cur_post$game_type == "WC"))
+  (all(!is.na(cur_reg$home_score[as.Date(cur_reg$gameday) == last_day])) || nrow(wc) > 0)
 
 # Who qualified is known once every qualifier appears in a playoff game:
 #   * Divisional round fully scheduled (every wild-card winner has a game):
 #     all qualifiers have appeared, whatever the playoff format.
 #   * Earlier, right after the regular season, only the wild-card games are
-#     listed. Using last season's format (field size and byes per
-#     conference), each conference's bye teams are its best-record teams not
-#     playing a wild-card game; a tie at the cutoff waits for the schedule.
-#     In the first season of a new format this path doesn't apply, and the
-#     status waits for the divisional schedule.
+#     listed and the teams with byes are missing. Every division winner
+#     qualifies, so a team that has its division's best record outright and
+#     isn't playing a wild-card game must have a bye. If that finds as many
+#     byes as last season's format had, the field is set; otherwise (a
+#     division decided on tiebreakers, or a new format) the status waits for
+#     the divisional schedule.
 playoff_teams <- character()
 playoff_field_known <- FALSE
 if (regular_season_over) {
   playoff_teams <- post_teams(CURRENT_SEASON)
-  wc <- cur_post |> filter(game_type == "WC")
   wc_played  <- wc |> filter(!is.na(home_score))
-  wc_winners <- franchise(if_else(wc_played$home_score > wc_played$away_score,
-                                  wc_played$home_team, wc_played$away_team))
-  div_scheduled <- nrow(wc) > 0 && all(!is.na(wc$home_score)) &&
+  wc_winners <- if_else(wc_played$home_score > wc_played$away_score,
+                        wc_played$home_team, wc_played$away_team)
+  div_scheduled <- nrow(wc) > 0 && nrow(wc_played) == nrow(wc) &&
     all(wc_winners %in% post_teams(CURRENT_SEASON, c("DIV", "CON", "SB")))
 
   field_size <- length(post_teams(LAST_COMPLETE_SEASON))
   n_byes     <- field_size - length(post_teams(LAST_COMPLETE_SEASON, "WC"))
-  wc_teams   <- post_teams(CURRENT_SEASON, "WC")
-  conference <- c(BAL = "AFC", BUF = "AFC", CIN = "AFC", CLE = "AFC", DEN = "AFC",
-                  HOU = "AFC", IND = "AFC", JAX = "AFC", KC  = "AFC", LV  = "AFC",
-                  LAC = "AFC", MIA = "AFC", NE  = "AFC", NYJ = "AFC", PIT = "AFC",
-                  TEN = "AFC", ARI = "NFC", ATL = "NFC", CAR = "NFC", CHI = "NFC",
-                  DAL = "NFC", DET = "NFC", GB  = "NFC", LA  = "NFC", MIN = "NFC",
-                  NO  = "NFC", NYG = "NFC", PHI = "NFC", SF  = "NFC", SEA = "NFC",
-                  TB  = "NFC", WAS = "NFC")
+  wc_teams   <- unique(c(wc$home_team, wc$away_team))
+  division <- c(BUF = "AFC East",  MIA = "AFC East",  NE  = "AFC East",  NYJ = "AFC East",
+                BAL = "AFC North", CIN = "AFC North", CLE = "AFC North", PIT = "AFC North",
+                HOU = "AFC South", IND = "AFC South", JAX = "AFC South", TEN = "AFC South",
+                DEN = "AFC West",  KC  = "AFC West",  LV  = "AFC West",  LAC = "AFC West",
+                DAL = "NFC East",  NYG = "NFC East",  PHI = "NFC East",  WAS = "NFC East",
+                CHI = "NFC North", DET = "NFC North", GB  = "NFC North", MIN = "NFC North",
+                ATL = "NFC South", CAR = "NFC South", NO  = "NFC South", TB  = "NFC South",
+                ARI = "NFC West",  LA  = "NFC West",  SF  = "NFC West",  SEA = "NFC West")
   standings <- team_season |>
     filter(season == CURRENT_SEASON) |>
-    mutate(conf = unname(conference[team]))
-  can_infer <- !div_scheduled && n_byes > 0 && n_byes %% 2 == 0 &&
-    length(wc_teams) == field_size - n_byes &&
-    !anyNA(standings$conf)            # an unknown team code: don't guess
-  if (can_infer) {
+    mutate(div = unname(division[team]))
+  if (!div_scheduled && n_byes > 0 && !anyNA(standings$div) &&   # unknown code: don't guess
+      length(wc_teams) == field_size - n_byes) {
     byes <- standings |>
-      filter(!team %in% wc_teams) |>
-      arrange(conf, desc(team_win_pct)) |>
-      group_by(conf) |>
-      filter(team_win_pct[n_byes / 2] > team_win_pct[n_byes / 2 + 1]) |>  # no tie at the cutoff
-      slice_head(n = n_byes / 2) |>
-      ungroup()
-    playoff_teams <- union(wc_teams, byes$team)
+      filter(team_win_pct == max(team_win_pct), .by = div) |>
+      filter(n() == 1, .by = div) |>                    # outright division leader
+      filter(!team %in% wc_teams)
+    if (nrow(byes) == n_byes) playoff_teams <- union(wc_teams, byes$team)
   }
   playoff_field_known <- div_scheduled ||
-    (can_infer && length(playoff_teams) == field_size) ||
-    (n_byes == 0 && length(wc_teams) == field_size)    # a format without byes
+    length(playoff_teams) == field_size && length(wc_teams) == field_size - n_byes
   message("The ", CURRENT_SEASON, " regular season is over. Coaches who have ",
           "left since need a row in data/research/coach_changes.csv to drop ",
           "off the hot seat.",
