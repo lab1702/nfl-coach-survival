@@ -1,13 +1,23 @@
-# Keeps the digest-pinned base images current: Dependabot opens a pull
-# request when a newer image is published for the pinned tag (security
-# fixes included), so updates are reviewed rather than silent.
+# Keeps the digest-pinned base images current. Dependabot opens a pull
+# request when a new image is published under the pinned tag (new digest,
+# security fixes included), so updates are reviewed rather than silent.
+#
+# Minor and major tag upgrades (e.g. ubuntu 26.04 -> 26.10, nginx 1.27 ->
+# 1.29) are ignored: they change R and package versions, which the pins exist
+# to control. Move to a new tag deliberately, by hand.
 version: 2
 updates:
   - package-ecosystem: docker          # FROM line in Dockerfile
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: docker-compose  # nginx image in compose.yaml
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

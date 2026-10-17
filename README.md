@@ -44,7 +44,7 @@ docker compose up -d --build
 - **Research files.** `data/research/` is mounted read-only from this folder, so edits take effect on the next run without a rebuild. Changes to `coach_tenure.R` need `docker compose up -d --build`.
 - **Volumes.** The games cache, the run log and the published page live in named volumes. `docker compose down -v` removes them.
 
-The image installs R and only the packages the script uses from Ubuntu's `r-cran-*` packages. Both base images (Ubuntu 26.04 and nginx) are pinned by digest, so a rebuild starts from the same images. Pinning also holds back their security fixes, so `.github/dependabot.yml` checks weekly and opens a pull request when a newer image is published for either tag. Without GitHub, update by hand: pull the tags and replace the digests in `Dockerfile` and `compose.yaml`. Each run's log (`output/run_log.txt` in the `output` volume) starts with the R and package versions it used.
+The image installs R and only the packages the script uses from Ubuntu's `r-cran-*` packages. Both base images (Ubuntu 26.04 and nginx) are pinned by digest, so a rebuild starts from the same images. Pinning also holds back their security fixes, so `.github/dependabot.yml` checks weekly and opens a pull request when a new image is published under either pinned tag. It ignores minor and major tag upgrades (such as Ubuntu 26.04 to 26.10), because those change the R and package versions; move to a new tag by hand when you choose to. Without GitHub, update by hand: pull the tags and replace the digests in `Dockerfile` and `compose.yaml`. Each run's log (`output/run_log.txt` in the `output` volume) starts with the R and package versions it used.
 
 ## Outputs
 
