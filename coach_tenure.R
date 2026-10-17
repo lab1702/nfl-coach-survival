@@ -33,7 +33,9 @@
 #   * data/research/gm_tenures.csv, owner_tenures.csv – GM and controlling-owner
 #     tenures by team, from Wikipedia.
 #
-# Requirements: R >= 4.1 (native pipe, \(x) lambdas, raw strings).
+# Requirements: R >= 4.1 (native pipe, \(x) lambdas, raw strings), dplyr >= 1.1.0
+# (slice_max(by =)), ggplot2 >= 3.4.0 (linewidth), readr >= 2.0.0
+# (show_col_types). Section 0 checks these before anything runs.
 #
 # Package substitutions: none were needed. Everything used (survival,
 # survminer, tidyverse, cmprsk, base64enc, htmltools) is installed. cmprsk
@@ -44,11 +46,22 @@
 
 # ---- 0. Setup ---------------------------------------------------------------
 
+if (getRversion() < "4.1.0") stop("This script needs R 4.1.0 or later.")
+
 needed <- c("survival", "survminer", "tidyverse", "cmprsk", "base64enc", "htmltools")
 missing_pkgs <- setdiff(needed, rownames(installed.packages()))
 if (length(missing_pkgs) > 0) {
   stop("These packages are not installed (and this script will not install ",
        "them): ", paste(missing_pkgs, collapse = ", "))
+}
+# Minimum versions for features the script relies on.
+min_versions <- c(dplyr = "1.1.0", ggplot2 = "3.4.0", readr = "2.0.0")
+too_old <- names(min_versions)[mapply(\(pkg, v) packageVersion(pkg) < v,
+                                       names(min_versions), min_versions)]
+if (length(too_old) > 0) {
+  stop("These packages are older than this script needs: ",
+       paste0(too_old, " (have ", sapply(too_old, \(p) format(packageVersion(p))),
+              ", need >= ", min_versions[too_old], ")", collapse = ", "))
 }
 
 suppressPackageStartupMessages({
@@ -118,8 +131,14 @@ if (stale) {
   tmp <- tempfile(fileext = ".csv")
   ok <- tryCatch(download.file(games_url, tmp, mode = "wb", quiet = TRUE) == 0,
                  error = function(e) FALSE, warning = function(w) FALSE)
-  if (ok && file.size(tmp) > 0) {
-    file.copy(tmp, games_file, overwrite = TRUE)
+  # Accept the download only if it looks like the games file (header has the
+  # columns this script uses); a proxy error page must not replace the cache.
+  needed_cols <- c("season", "game_type", "gameday", "home_team", "away_team",
+                   "home_score", "away_score", "home_coach", "away_coach")
+  valid <- ok && file.size(tmp) > 0 &&
+    all(needed_cols %in% strsplit(readLines(tmp, n = 1, warn = FALSE), ",")[[1]])
+  if (valid && file.copy(tmp, games_file, overwrite = TRUE)) {
+    # refreshed
   } else if (file.exists(games_file)) {
     warning("Could not refresh ", games_url, "; using the cached copy from ",
             format(file.mtime(games_file), "%Y-%m-%d"))
@@ -130,10 +149,25 @@ if (stale) {
 games <- read_csv(games_file, show_col_types = FALSE) |>
   filter(!is.na(home_score))                 # games already played
 
+# Guard the season settings against the data. CURRENT_SEASON must be the
+# season in progress: it must have started, it must not be over (its Super
+# Bowl unplayed), and no later season may have results yet.
+roll_forward <- paste0("Update the season settings in section 0 and add that ",
+                       "offseason's changes to data/research/.")
+if (LAST_COMPLETE_SEASON != CURRENT_SEASON - 1) {
+  stop("LAST_COMPLETE_SEASON should be CURRENT_SEASON - 1.")
+}
 if (any(games$season > CURRENT_SEASON)) {
   stop("The games file has results from season ", max(games$season),
-       ", but CURRENT_SEASON is ", CURRENT_SEASON, ". Update the season ",
-       "settings in section 0 and the research files in data/research/.")
+       ", but CURRENT_SEASON is ", CURRENT_SEASON, ". ", roll_forward)
+}
+if (any(games$season == CURRENT_SEASON & games$game_type == "SB")) {
+  stop("The ", CURRENT_SEASON, " season is over (its Super Bowl has been ",
+       "played), so it can't be treated as in progress. ", roll_forward)
+}
+if (!any(games$season == CURRENT_SEASON)) {
+  stop("No ", CURRENT_SEASON, " games have been played yet. Run this once ",
+       "the season has started, or set CURRENT_SEASON to the season in progress.")
 }
 
 relocated <- c(OAK = "LV", SD = "LAC", STL = "LA")   # one code per franchise
@@ -301,8 +335,15 @@ if (any(unmatched$last_season <= LAST_COMPLETE_SEASON)) {
   stop("Some ended stints have no departure record in coach_changes.csv")
 }
 if (nrow(unmatched) > 0) {
-  message("Left during ", CURRENT_SEASON, " with no departure record yet (censored): ",
-          paste0(unmatched$coach, " (", unmatched$team, ")", collapse = ", "))
+  # Either a real mid-season departure not yet in the research file, or a
+  # coach-credit problem in the games file (e.g. a one-game fill-in). Both
+  # leave the team without a rated coach, so say so loudly; the HTML report
+  # also lists unrated teams.
+  warning("No departure record for ", CURRENT_SEASON, " stint(s): ",
+          paste0(unmatched$coach, " (", unmatched$team, ")", collapse = ", "),
+          ". They are censored, and these teams get no hot-seat rating. Add the ",
+          "departure to data/research/coach_changes.csv, or check the coach ",
+          "credited in the games file.", call. = FALSE)
   stints <- stints |> mutate(event_type = coalesce(event_type, "unknown"))
 }
 # Reverse check: departures that match no stint should all be coaches hired
@@ -401,15 +442,14 @@ n_complete <- coach_seasons |>
 tenure <- stints |>
   left_join(n_complete, by = "stint_id") |>
   mutate(seasons = coalesce(seasons, 0L),
-         # status = 1 only for a firing; everything else is censored
-         status  = as.integer(event_type == "fired" &
-                                last_season <= LAST_COMPLETE_SEASON),
-         # a stint that ended during the current season is censored at the
-         # last complete season; its label says so
-         event_type = if_else(last_season > LAST_COMPLETE_SEASON &
-                                event_type != "active",
-                              paste0(event_type, " (", CURRENT_SEASON, ", censored)"),
-                              event_type)) |>
+         # The single rule for what the models count: an exit is observed only
+         # if it happened by the end of the last complete season. A coach who
+         # left during the current season keeps his event_type (fired,
+         # resigned, ...) but is censored, flagged by left_in_current_season.
+         observed = event_type != "active" & last_season <= LAST_COMPLETE_SEASON,
+         left_in_current_season = event_type != "active" & !observed,
+         # status = 1 only for an observed firing; everything else is censored
+         status  = as.integer(observed & event_type == "fired")) |>
   arrange(hire_season, team)
 
 # Event flag on the season row in which the firing happened (the stint's
@@ -421,7 +461,8 @@ coach_seasons <- coach_seasons |>
   select(-status)
 
 write_csv(tenure |> select(coach, team, hire_season, last_season, seasons,
-                           event_type, status, ended_midseason, background,
+                           event_type, status, left_in_current_season,
+                           ended_midseason, background,
                            prior_hc, prior_interim_only, interim_before,
                            age_at_hire, prev_win_pct, reason_raw, source_url),
           "data/tenure.csv")
@@ -626,8 +667,7 @@ ggsave("plots/05_cox_timevarying_forest.png", p_forest_tv, width = 9, height = 5
 # retired can no longer be fired.)
 
 cr <- fit_data |>
-  mutate(fstatus = case_when(event_type == "active" |
-                               last_season > LAST_COMPLETE_SEASON ~ 0L,  # censored
+  mutate(fstatus = case_when(!observed ~ 0L,               # censored
                              event_type == "fired" ~ 1L,
                              TRUE ~ 2L))  # resigned / retired / other
 ci <- cuminc(ftime = cr$seasons, fstatus = cr$fstatus, cencode = 0)
@@ -707,7 +747,7 @@ risk <- current |>
          p_fired_if_miss    = risk_for(current, FALSE),
          p_fired_if_playoff = risk_for(current, TRUE)) |>
   arrange(desc(p_fired_if_miss)) |>
-  transmute(coach, team, season_number = tenure_season, record = record,
+  transmute(coach, team, season_number = tenure_season, record,
             games_played = g_reg,
             proj_win_pct = round(win_pct, 3),
             proj_win_pct_change = round(win_pct_change, 3),
@@ -749,7 +789,9 @@ ggsave("plots/07_current_coach_risk.png", p_risk, width = 9, height = 9, dpi = 1
 # above, so the page stays in step with the data each time the script runs.
 
 esc <- function(x) htmltools::htmlEscape(as.character(x))
-long_date <- function(d) paste0(format(d, "%B "), as.integer(format(d, "%d")), format(d, ", %Y"))
+# English month names regardless of the user's locale (format "%B" is localized).
+long_date <- function(d) paste0(month.name[as.integer(format(d, "%m"))], " ",
+                                as.integer(format(d, "%d")), ", ", format(d, "%Y"))
 pct <- function(x, d = 0) sprintf(paste0("%.", d, "f%%"), 100 * x)
 num <- function(x, d = 2) formatC(x, format = "f", digits = d)
 pval <- function(p) ifelse(p < 0.001, "< 0.001", formatC(p, format = "f", digits = 3))
@@ -958,12 +1000,20 @@ board <- paste0(
   '<th class="num">Proj. win %</th><th>If team misses playoffs</th><th class="num">If makes</th>',
   "</tr></thead><tbody>", paste(board_rows, collapse = ""), "</tbody></table></div>")
 
+# Teams playing this season whose current coach has no rating: an interim
+# coach, or a departure not yet in the research file (see section 1e).
+unrated <- current_coaches |> anti_join(risk, by = c("team", "coach"))
+unrated_note <- if (nrow(unrated) == 0) "" else sprintf(
+  '<p class="small">Not rated: %s. Interim coaches, and coaches whose predecessor left without a departure record yet, have no model row.</p>',
+  paste0(esc(unrated$team), " (", esc(unrated$coach), ")", collapse = ", "))
+
 sec_now <- section("hot-seat", "06", sprintf("The hot seat: risk of being fired after %d", CURRENT_SEASON),
   sprintf("<p>Each team&rsquo;s %d season is projected from results through week %d plus .500 football and an even point differential the rest of the way. Playoffs aren&rsquo;t decided, so each coach gets two numbers.</p>",
           CURRENT_SEASON, week_through),
   spotlight,
   '<p class="note"><strong>Model estimates, not predictions.</strong> The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries or owner temperament, and the baseline risk for very long tenures is pooled and imprecise.</p>',
   board,
+  unrated_note,
   img("plots/07_current_coach_risk.png", "Estimated chance each current coach is fired after the season"))
 
 sec_lim <- section("limits", "07", "Limitations",
