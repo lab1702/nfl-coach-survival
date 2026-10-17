@@ -309,15 +309,27 @@ if (regular_season_over) {
 
   field_size <- length(post_teams(LAST_COMPLETE_SEASON))
   n_byes     <- field_size - length(post_teams(LAST_COMPLETE_SEASON, "WC"))
-  wc_teams   <- unique(c(wc$home_team, wc$away_team))
-  division <- c(BUF = "AFC East",  MIA = "AFC East",  NE  = "AFC East",  NYJ = "AFC East",
-                BAL = "AFC North", CIN = "AFC North", CLE = "AFC North", PIT = "AFC North",
-                HOU = "AFC South", IND = "AFC South", JAX = "AFC South", TEN = "AFC South",
-                DEN = "AFC West",  KC  = "AFC West",  LV  = "AFC West",  LAC = "AFC West",
-                DAL = "NFC East",  NYG = "NFC East",  PHI = "NFC East",  WAS = "NFC East",
-                CHI = "NFC North", DET = "NFC North", GB  = "NFC North", MIN = "NFC North",
-                ATL = "NFC South", CAR = "NFC South", NO  = "NFC South", TB  = "NFC South",
-                ARI = "NFC West",  LA  = "NFC West",  SF  = "NFC West",  SEA = "NFC West")
+  wc_teams   <- post_teams(CURRENT_SEASON, "WC")
+
+  # Divisions come from the data: teams that play each other in division
+  # games (div_game == 1) this season form a division. Label propagation:
+  # every team ends up with the smallest label among its division rivals.
+  division <- character()
+  if ("div_game" %in% names(games_all)) {
+    dg <- cur_reg |>
+      filter(div_game == 1) |>
+      transmute(a = franchise(home_team), b = franchise(away_team))
+    teams <- sort(unique(c(dg$a, dg$b)))
+    label <- setNames(seq_along(teams), teams)
+    repeat {
+      m <- pmin(label[dg$a], label[dg$b])
+      new <- label
+      new[] <- pmin(label, tapply(c(m, m), c(dg$a, dg$b), min)[names(label)])
+      if (identical(new, label)) break
+      label <- new
+    }
+    division <- setNames(paste0("div", label), names(label))
+  }
   standings <- team_season |>
     filter(season == CURRENT_SEASON) |>
     mutate(div = unname(division[team]))
