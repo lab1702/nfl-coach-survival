@@ -26,7 +26,7 @@ Rscript coach_tenure.R
 
 It takes about 30 seconds. On first run, and whenever the cached copy is more than a day old, it downloads the nflverse games file into `data/raw/`. A download that fails, or doesn't look like the games file, never replaces the cached copy.
 
-It runs at any time of year. The season settings come from the data: the last complete season is the latest one whose Super Bowl has been played, and the next season counts as in progress once it has results. The hot-seat ratings only appear while a season is in progress; in the offseason the report says when they'll return. Until the playoff field is set, each coach gets two numbers (if his team misses or makes the playoffs). After that, the estimate uses the team's actual playoff result. In a season's opening days, teams that haven't played yet are listed as not rated.
+It runs at any time of year. The season settings come from the data: the last complete season is the latest one whose Super Bowl has been played, and the next season counts as in progress once it has results. The hot-seat ratings only appear while a season is in progress; in the offseason the report says when they'll return. Until the playoff field is set, each coach gets two numbers (if his team misses or makes the playoffs). Once the regular season is over and the wild-card games are scheduled, the estimate uses the team's actual playoff result. Teams with first-round byes are worked out from the standings, and the playoff format (field size and byes) is read from the previous season. In a season's opening days, teams that haven't played yet are listed as not rated.
 
 ## Outputs
 
@@ -57,7 +57,7 @@ Every research row carries its source URL. The research files are current as of 
 
 The season rolls forward on its own. What needs updating by hand is the research:
 
-Add each offseason's head-coach departures to `coach_changes.csv` (with `article_season` set to the new season), and any GM or owner changes to their files. The script reads how far the research goes from the latest `article_season` and warns when the data has moved past it.
+Add each offseason's head-coach departures to `coach_changes.csv` (with `article_season` set to the new season), and any GM or owner changes to their files. The script reads how far the coaching research goes from the latest `article_season` and warns when the data has moved past it. It can't tell whether the GM and owner files are current, because a team with no change leaves no row, so check those by hand.
 
 Departures matter most. A coach fired after the season is still credited with his team's last game, so until his row is in `coach_changes.csv` he counts as still in the job. Once it's there he drops off the hot seat; the record always wins over the game data.
 

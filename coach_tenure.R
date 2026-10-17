@@ -82,9 +82,9 @@ dir.create("output", showWarnings = FALSE)
 #     end: we know who survived it, nothing after.
 #   * CURRENT_SEASON = LAST_COMPLETE_SEASON + 1, in progress once it has
 #     results. The hot-seat ratings (section 7) only run then.
-# The research files' coverage is read from coach_changes.csv (its latest
-# article_season); when the data moves past it, the script warns that the
-# research files need that offseason's changes.
+# The coaching research's coverage is read from coach_changes.csv (its
+# latest article_season); when the data moves past it, the script warns that
+# the research files need that offseason's changes.
 
 # Colours (checked for colour-vision-deficiency separation): blue, orange, aqua.
 pal <- c("#2a78d6", "#eb6834", "#1baf7a")
@@ -160,19 +160,56 @@ message("Last complete season: ", LAST_COMPLETE_SEASON, ". ",
         if (season_in_progress) paste(CURRENT_SEASON, "is in progress.")
         else paste("Offseason: no hot-seat ratings until", CURRENT_SEASON, "starts."))
 relocated <- c(OAK = "LV", SD = "LAC", STL = "LA")   # one code per franchise
+franchise <- function(x) unname(coalesce(relocated[x], x))
 
-# Playoff qualification is known once the whole field is set: every
-# qualifier appears in a scheduled or played playoff game. (Wild-card games
-# alone miss the two teams with byes.) Used by the hot seat in section 7.
-PLAYOFF_FIELD <- 14
-pg <- games_all |> filter(season == CURRENT_SEASON, game_type != "REG")
-playoff_teams <- unique(c(pg$home_team, pg$away_team))
-playoff_teams <- unique(coalesce(relocated[playoff_teams], playoff_teams))
-regular_season_over <- season_in_progress && length(playoff_teams) >= PLAYOFF_FIELD
+## Playoff qualification for the season in progress (used by section 7) -----
+# Teams in a season's playoff games, scheduled or played. Only codes that
+# also appear in that season's regular season count, so placeholder rows for
+# games whose teams aren't known yet are ignored.
+post_teams <- function(s, types = c("WC", "DIV", "CON", "SB")) {
+  g   <- games_all |> filter(season == s)
+  reg <- franchise(c(g$home_team[g$game_type == "REG"], g$away_team[g$game_type == "REG"]))
+  p   <- g |> filter(game_type %in% types)
+  intersect(unique(franchise(c(p$home_team, p$away_team))), reg)
+}
+# Field size and number of first-round byes come from the last complete
+# season, so a change of playoff format is picked up automatically.
+field_size <- length(post_teams(LAST_COMPLETE_SEASON))
+n_byes     <- field_size - length(post_teams(LAST_COMPLETE_SEASON, "WC"))
+# Conferences, to work out which teams have the byes.
+afc <- c("BAL", "BUF", "CIN", "CLE", "DEN", "HOU", "IND", "JAX",
+         "KC", "LV", "LAC", "MIA", "NE", "NYJ", "PIT", "TEN")
+
+reg_cur <- games_all |> filter(season == CURRENT_SEASON, game_type == "REG")
+regular_season_over <- season_in_progress && nrow(reg_cur) > 0 &&
+  all(!is.na(reg_cur$home_score))
+playoff_teams <- if (regular_season_over) post_teams(CURRENT_SEASON) else character()
+
+# Once the regular season ends, the wild-card games are scheduled but the
+# bye teams don't appear until the divisional round is. Each conference's
+# byes go to its best-record teams among those not playing a wild-card game
+# (a tie at the cutoff is left undecided until the schedule shows it).
+if (regular_season_over && length(playoff_teams) < field_size && n_byes > 0 &&
+    n_byes %% 2 == 0 && length(post_teams(CURRENT_SEASON, "WC")) == field_size - n_byes) {
+  byes <- bind_rows(
+    tibble(team = franchise(reg_cur$home_team), margin = reg_cur$home_score - reg_cur$away_score),
+    tibble(team = franchise(reg_cur$away_team), margin = reg_cur$away_score - reg_cur$home_score)) |>
+    summarise(win_pct = mean((margin > 0) + 0.5 * (margin == 0)), .by = team) |>
+    filter(!team %in% playoff_teams) |>
+    mutate(conf = if_else(team %in% afc, "AFC", "NFC")) |>
+    arrange(conf, desc(win_pct)) |>
+    group_by(conf) |>
+    filter(win_pct[n_byes / 2] > win_pct[n_byes / 2 + 1]) |>   # no tie at the cutoff
+    slice_head(n = n_byes / 2) |>
+    ungroup()
+  playoff_teams <- c(playoff_teams, byes$team)
+}
+playoff_field_known <- regular_season_over && length(playoff_teams) == field_size
 if (regular_season_over) {
   message("The ", CURRENT_SEASON, " regular season is over. Coaches who have ",
           "left since need a row in data/research/coach_changes.csv to drop ",
-          "off the hot seat.")
+          "off the hot seat.",
+          if (!playoff_field_known) " The playoff field isn't settled yet, so ratings still show both scenarios.")
 }
 
 # One row per team per game.
@@ -182,7 +219,7 @@ team_games <- bind_rows(
   games |> transmute(game_id, season, game_type, gameday, team = away_team,
                      coach = away_coach, pf = away_score, pa = home_score)
 ) |>
-  mutate(team    = coalesce(relocated[team], team),
+  mutate(team    = franchise(team),
          gameday = as.Date(gameday),
          coach   = recode(coach, "Klint Kubliak" = "Klint Kubiak"),  # typo
          # Two different coaches are both "Jim Mora" in the source.
@@ -198,11 +235,15 @@ changes <- read_csv("data/research/coach_changes.csv", show_col_types = FALSE) |
          interim_key = name_key(interim_coach),
          departure_date = as.Date(departure_date))
 
+# How far the coaching research goes. The GM and owner files can't be
+# checked this way (a team with no change leaves no row), so the warning
+# reminds about them too.
 research_through <- max(changes$article_season)
 if (CURRENT_SEASON > research_through) {
-  warning("data/research/ covers changes through the ", research_through,
+  warning("coach_changes.csv covers departures through the ", research_through,
           " offseason, but the data has reached ", CURRENT_SEASON, ". Add the ",
-          CURRENT_SEASON, " offseason's coach, GM and owner changes.", call. = FALSE)
+          CURRENT_SEASON, " offseason's departures, and check gm_tenures.csv and ",
+          "owner_tenures.csv for that offseason's changes too.", call. = FALSE)
 }
 
 # nflverse credits one coach per game but occasionally misses a mid-season
@@ -765,7 +806,7 @@ if (season_in_progress) {
   # drives the ranking; the scenario columns are kept for reference.
   risk <- current |>
     mutate(record = paste0(w, "-", l, if_else(t > 0, paste0("-", t), "")),
-           made_playoffs      = if (regular_season_over) team %in% playoff_teams else NA,
+           made_playoffs      = if (playoff_field_known) team %in% playoff_teams else NA,
            p_fired_if_miss    = risk_for(current, FALSE),
            p_fired_if_playoff = risk_for(current, TRUE),
            p_fired = if_else(made_playoffs, p_fired_if_playoff, p_fired_if_miss)) |>
@@ -782,14 +823,14 @@ if (season_in_progress) {
 
   write_csv(risk, paste0("output/current_coach_risk_", CURRENT_SEASON, ".csv"))
   cat("\n== Model-estimated probability of being fired after", CURRENT_SEASON, "==\n")
-  cat(if (regular_season_over) "(final regular-season records and actual playoff results; estimates, not forecasts)\n"
+  cat(if (playoff_field_known) "(final regular-season records and actual playoff results; estimates, not forecasts)\n"
       else "(projected season: results to date + .500 the rest of the way; estimates, not forecasts)\n")
   print(risk, n = 32)
 
   risk_plot <- risk |>
     mutate(label = paste0(coach, " (", team, ", ", record, ")"),
            label = fct_reorder(label, coalesce(p_fired, p_fired_if_miss)))
-  if (regular_season_over) {
+  if (playoff_field_known) {
     p_risk <- ggplot(risk_plot, aes(x = p_fired, y = label,
                                     colour = if_else(made_playoffs, "Made playoffs", "Missed playoffs"))) +
       geom_point(size = 2.8) +
@@ -1033,11 +1074,11 @@ if (season_in_progress) {
   # the team's actual playoff result.
   headline <- coalesce(risk$p_fired, risk$p_fired_if_miss)
   spot <- risk |> mutate(headline = headline) |> slice_head(n = 3)
-  spot_label <- if (regular_season_over) {
+  spot_label <- if (playoff_field_known) {
     if_else(spot$made_playoffs, "estimated risk &middot; made the playoffs",
             "estimated risk &middot; missed the playoffs")
   } else rep("if they miss the playoffs", nrow(spot))
-  spot_alt <- if (regular_season_over) rep("", nrow(spot)) else
+  spot_alt <- if (playoff_field_known) rep("", nrow(spot)) else
     sprintf('<div class="spot-alt">%s if they make it</div>', pct(spot$p_fired_if_playoff))
   spotlight <- paste0('<div class="spotlight">', paste0(
     sprintf('<div class="spot"><div class="spot-rank">#%d</div><div class="spot-name">%s</div><div class="spot-meta">%s &middot; %s season &middot; %s</div><div class="spot-num">%s</div><div class="spot-label">%s</div>%s</div>',
@@ -1047,7 +1088,7 @@ if (season_in_progress) {
 
   bar <- sprintf('<td class="barcell"><div class="bar"><span style="width:%.1f%%"></span></div><b>%s</b></td>',
                  100 * headline / max(headline), pct(headline))
-  if (regular_season_over) {
+  if (playoff_field_known) {
     last_cols <- paste0('<td>', if_else(risk$made_playoffs, "Made", "Missed"), "</td>", bar)
     last_head <- '<th>Playoffs</th><th>Estimated risk</th>'
     win_head  <- "Win %"
@@ -1075,7 +1116,7 @@ if (season_in_progress) {
     '<p class="small">Not rated: %s. Coaches without a model row this season (and those whose predecessor left without a departure record yet) aren&rsquo;t rated.</p>',
     paste0(esc(unrated$team), " (", esc(unrated$coach), ": ", unrated$why, ")", collapse = ", "))
 
-  intro <- if (regular_season_over) {
+  intro <- if (playoff_field_known) {
     sprintf("<p>The %d regular season is over, so each estimate uses the team&rsquo;s final record and its actual playoff result.</p>",
             CURRENT_SEASON)
   } else {
