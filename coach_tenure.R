@@ -162,56 +162,6 @@ message("Last complete season: ", LAST_COMPLETE_SEASON, ". ",
 relocated <- c(OAK = "LV", SD = "LAC", STL = "LA")   # one code per franchise
 franchise <- function(x) unname(coalesce(relocated[x], x))
 
-## Playoff qualification for the season in progress (used by section 7) -----
-# Teams in a season's playoff games, scheduled or played. Only codes that
-# also appear in that season's regular season count, so placeholder rows for
-# games whose teams aren't known yet are ignored.
-post_teams <- function(s, types = c("WC", "DIV", "CON", "SB")) {
-  g   <- games_all |> filter(season == s)
-  reg <- franchise(c(g$home_team[g$game_type == "REG"], g$away_team[g$game_type == "REG"]))
-  p   <- g |> filter(game_type %in% types)
-  intersect(unique(franchise(c(p$home_team, p$away_team))), reg)
-}
-# Field size and number of first-round byes come from the last complete
-# season, so a change of playoff format is picked up automatically.
-field_size <- length(post_teams(LAST_COMPLETE_SEASON))
-n_byes     <- field_size - length(post_teams(LAST_COMPLETE_SEASON, "WC"))
-# Conferences, to work out which teams have the byes.
-afc <- c("BAL", "BUF", "CIN", "CLE", "DEN", "HOU", "IND", "JAX",
-         "KC", "LV", "LAC", "MIA", "NE", "NYJ", "PIT", "TEN")
-
-reg_cur <- games_all |> filter(season == CURRENT_SEASON, game_type == "REG")
-regular_season_over <- season_in_progress && nrow(reg_cur) > 0 &&
-  all(!is.na(reg_cur$home_score))
-playoff_teams <- if (regular_season_over) post_teams(CURRENT_SEASON) else character()
-
-# Once the regular season ends, the wild-card games are scheduled but the
-# bye teams don't appear until the divisional round is. Each conference's
-# byes go to its best-record teams among those not playing a wild-card game
-# (a tie at the cutoff is left undecided until the schedule shows it).
-if (regular_season_over && length(playoff_teams) < field_size && n_byes > 0 &&
-    n_byes %% 2 == 0 && length(post_teams(CURRENT_SEASON, "WC")) == field_size - n_byes) {
-  byes <- bind_rows(
-    tibble(team = franchise(reg_cur$home_team), margin = reg_cur$home_score - reg_cur$away_score),
-    tibble(team = franchise(reg_cur$away_team), margin = reg_cur$away_score - reg_cur$home_score)) |>
-    summarise(win_pct = mean((margin > 0) + 0.5 * (margin == 0)), .by = team) |>
-    filter(!team %in% playoff_teams) |>
-    mutate(conf = if_else(team %in% afc, "AFC", "NFC")) |>
-    arrange(conf, desc(win_pct)) |>
-    group_by(conf) |>
-    filter(win_pct[n_byes / 2] > win_pct[n_byes / 2 + 1]) |>   # no tie at the cutoff
-    slice_head(n = n_byes / 2) |>
-    ungroup()
-  playoff_teams <- c(playoff_teams, byes$team)
-}
-playoff_field_known <- regular_season_over && length(playoff_teams) == field_size
-if (regular_season_over) {
-  message("The ", CURRENT_SEASON, " regular season is over. Coaches who have ",
-          "left since need a row in data/research/coach_changes.csv to drop ",
-          "off the hot seat.",
-          if (!playoff_field_known) " The playoff field isn't settled yet, so ratings still show both scenarios.")
-}
-
 # One row per team per game.
 team_games <- bind_rows(
   games |> transmute(game_id, season, game_type, gameday, team = home_team,
@@ -310,6 +260,80 @@ team_season <- team_games |>
   filter(game_type == "REG") |>
   group_by(team, season) |>
   summarise(team_win_pct = mean((pf > pa) + 0.5 * (pf == pa)), .groups = "drop")
+
+## 1c'. Playoff qualification for the season in progress (used by section 7)
+# Teams in a season's playoff games, scheduled or played. Only codes that
+# also appear in that season's regular season count, so placeholder rows for
+# games whose teams aren't known yet are ignored.
+post_teams <- function(s, types = c("WC", "DIV", "CON", "SB")) {
+  g   <- games_all |> filter(season == s)
+  reg <- franchise(c(g$home_team[g$game_type == "REG"], g$away_team[g$game_type == "REG"]))
+  p   <- g |> filter(game_type %in% types)
+  intersect(unique(franchise(c(p$home_team, p$away_team))), reg)
+}
+cur_post <- games_all |> filter(season == CURRENT_SEASON, game_type != "REG")
+cur_reg  <- games_all |> filter(season == CURRENT_SEASON, game_type == "REG")
+
+# The regular season is over once the data reaches its last scheduled
+# gameday, or once wild-card games are on the schedule. (Requiring a score
+# for every game would hang on a postponed game that never gets played.)
+regular_season_over <- season_in_progress && nrow(cur_reg) > 0 &&
+  (max(as.Date(cur_reg$gameday)) <= max(games$gameday) || any(cur_post$game_type == "WC"))
+
+# Who qualified is known once every qualifier appears in a playoff game:
+#   * Divisional round fully scheduled (every wild-card winner has a game):
+#     all qualifiers have appeared, whatever the playoff format.
+#   * Earlier, right after the regular season, only the wild-card games are
+#     listed. Using last season's format (field size and byes per
+#     conference), each conference's bye teams are its best-record teams not
+#     playing a wild-card game; a tie at the cutoff waits for the schedule.
+#     In the first season of a new format this path doesn't apply, and the
+#     status waits for the divisional schedule.
+playoff_teams <- character()
+playoff_field_known <- FALSE
+if (regular_season_over) {
+  playoff_teams <- post_teams(CURRENT_SEASON)
+  wc <- cur_post |> filter(game_type == "WC")
+  wc_played  <- wc |> filter(!is.na(home_score))
+  wc_winners <- franchise(if_else(wc_played$home_score > wc_played$away_score,
+                                  wc_played$home_team, wc_played$away_team))
+  div_scheduled <- nrow(wc) > 0 && all(!is.na(wc$home_score)) &&
+    all(wc_winners %in% post_teams(CURRENT_SEASON, c("DIV", "CON", "SB")))
+
+  field_size <- length(post_teams(LAST_COMPLETE_SEASON))
+  n_byes     <- field_size - length(post_teams(LAST_COMPLETE_SEASON, "WC"))
+  wc_teams   <- post_teams(CURRENT_SEASON, "WC")
+  conference <- c(BAL = "AFC", BUF = "AFC", CIN = "AFC", CLE = "AFC", DEN = "AFC",
+                  HOU = "AFC", IND = "AFC", JAX = "AFC", KC  = "AFC", LV  = "AFC",
+                  LAC = "AFC", MIA = "AFC", NE  = "AFC", NYJ = "AFC", PIT = "AFC",
+                  TEN = "AFC", ARI = "NFC", ATL = "NFC", CAR = "NFC", CHI = "NFC",
+                  DAL = "NFC", DET = "NFC", GB  = "NFC", LA  = "NFC", MIN = "NFC",
+                  NO  = "NFC", NYG = "NFC", PHI = "NFC", SF  = "NFC", SEA = "NFC",
+                  TB  = "NFC", WAS = "NFC")
+  standings <- team_season |>
+    filter(season == CURRENT_SEASON) |>
+    mutate(conf = unname(conference[team]))
+  can_infer <- !div_scheduled && n_byes > 0 && n_byes %% 2 == 0 &&
+    length(wc_teams) == field_size - n_byes &&
+    !anyNA(standings$conf)            # an unknown team code: don't guess
+  if (can_infer) {
+    byes <- standings |>
+      filter(!team %in% wc_teams) |>
+      arrange(conf, desc(team_win_pct)) |>
+      group_by(conf) |>
+      filter(team_win_pct[n_byes / 2] > team_win_pct[n_byes / 2 + 1]) |>  # no tie at the cutoff
+      slice_head(n = n_byes / 2) |>
+      ungroup()
+    playoff_teams <- union(wc_teams, byes$team)
+  }
+  playoff_field_known <- div_scheduled ||
+    (can_infer && length(playoff_teams) == field_size) ||
+    (n_byes == 0 && length(wc_teams) == field_size)    # a format without byes
+  message("The ", CURRENT_SEASON, " regular season is over. Coaches who have ",
+          "left since need a row in data/research/coach_changes.csv to drop ",
+          "off the hot seat.",
+          if (!playoff_field_known) " The playoff field isn't settled yet, so ratings still show both scenarios.")
+}
 
 ## 1d. Stints -----------------------------------------------------------------
 # A stint is a run of consecutive seasons by the same coach with the same
