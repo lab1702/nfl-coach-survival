@@ -17,6 +17,8 @@
 #   5. Time-varying Cox model in counting-process (start, stop] format
 #   6. Competing risks: cumulative incidence of firing vs. other exits
 #   7. Model-based firing risk for current coaches after the 2026 season
+#   8. A self-contained HTML report (output/coach_tenure_report.html) with
+#      every plot embedded, ready to drop on any web server
 #
 # Data sources (nothing here is invented; every research row carries a URL)
 #   * nflverse games file: https://github.com/nflverse/nfldata (data/games.csv)
@@ -31,14 +33,15 @@
 #     tenures by team, from Wikipedia.
 #
 # Package substitutions: none were needed. Everything used (survival,
-# survminer, tidyverse, cmprsk) is installed. cmprsk is used for the
-# competing-risks cumulative incidence; survminer::ggcompetingrisks plots it.
+# survminer, tidyverse, cmprsk, base64enc, htmltools) is installed. cmprsk
+# computes the competing-risks cumulative incidence; base64enc and htmltools
+# embed the plots and escape text in the HTML report (no pandoc needed).
 # =============================================================================
 
 
 # ---- 0. Setup ---------------------------------------------------------------
 
-needed <- c("survival", "survminer", "tidyverse", "cmprsk")
+needed <- c("survival", "survminer", "tidyverse", "cmprsk", "base64enc", "htmltools")
 missing_pkgs <- setdiff(needed, rownames(installed.packages()))
 if (length(missing_pkgs) > 0) {
   stop("These packages are not installed (and this script will not install ",
@@ -697,5 +700,250 @@ p_risk <- risk |>
   theme(legend.position = "top", legend.justification = "left",
         panel.grid.major.y = element_blank())
 ggsave("plots/07_current_coach_risk.png", p_risk, width = 9, height = 9, dpi = 150)
+
+
+
+# ---- 8. Self-contained HTML report -------------------------------------------
+# One HTML file with the plots embedded as base64 PNGs and no external
+# scripts, stylesheets or fonts, so it can be copied to any web server (or
+# opened locally) as-is. All numbers below are computed from the models
+# above, so the page stays in step with the data each time the script runs.
+
+esc <- function(x) htmltools::htmlEscape(as.character(x))
+pct <- function(x, d = 0) sprintf(paste0("%.", d, "f%%"), 100 * x)
+num <- function(x, d = 2) formatC(x, format = "f", digits = d)
+pval <- function(p) ifelse(p < 0.001, "< 0.001", formatC(p, format = "f", digits = 3))
+
+img <- function(path, alt) {
+  sprintf('<figure><img src="data:image/png;base64,%s" alt="%s"></figure>',
+          base64enc::base64encode(path), esc(alt))
+}
+
+# A data frame as an HTML table; `num_cols` are right-aligned.
+html_table <- function(df, caption = NULL, num_cols = integer()) {
+  cls <- ifelse(seq_along(df) %in% num_cols, ' class="num"', "")
+  head <- paste0("<th", cls, ">", esc(names(df)), "</th>", collapse = "")
+  rows <- apply(df, 1, \(r) paste0("<tr>", paste0("<td", cls, ">", esc(r), "</td>",
+                                                  collapse = ""), "</tr>"))
+  paste0('<div class="table-wrap"><table>',
+         if (!is.null(caption)) paste0("<caption>", esc(caption), "</caption>"),
+         "<thead><tr>", head, "</tr></thead><tbody>",
+         paste(rows, collapse = ""), "</tbody></table></div>")
+}
+
+# Hazard-ratio table from a coxph fit (robust CIs/p-values when clustered).
+hr_table <- function(fit, labels) {
+  ci <- summary(fit)$conf.int
+  pv <- summary(fit)$coefficients[, "Pr(>|z|)"]
+  tibble(Covariate = coalesce(labels[rownames(ci)], rownames(ci)),
+         `Hazard ratio` = num(ci[, "exp(coef)"]),
+         `95% CI` = paste0(num(ci[, "lower .95"]), "–", num(ci[, "upper .95"])),
+         p = pval(pv)) |>
+    html_table(num_cols = 2:4)
+}
+
+zph_table <- function(z, labels) {
+  tb <- z$table
+  tibble(Term = coalesce(labels[rownames(tb)], rownames(tb)),
+         `Chi-square` = num(tb[, "chisq"]), p = pval(tb[, "p"])) |>
+    html_table(num_cols = 2:3)
+}
+
+base_labels <- c(age5 = "Age at hire (per +5 years)",
+                 prior_hcTRUE = "Previous NFL head coach",
+                 prior_hc = "Previous NFL head coach",
+                 prev_win10 = "Team win % the season before hire (per +10 pts)",
+                 GLOBAL = "Global test")
+all_labels <- c(base_labels, tv_labels,
+                win10 = "Win % this season (per +10 pts)",
+                win_chg10 = "Change in win % vs last season (per +10 pts)",
+                win_chg10_s1_2 = "Change in win % vs last season, seasons 1–2",
+                win_chg10_s3plus = "Change in win % vs last season, season 3+",
+                playoff = "Made playoffs this season",
+                pd_per_game = "Point differential per game (per +1)",
+                new_gm_or_owner = "New GM or owner this season")
+
+## Numbers used in the text --------------------------------------------------
+km_tab   <- summary(km_all)$table
+km_bg_tb <- summary(km_bg)$table
+lr       <- survdiff(Surv(seasons, status) ~ background, data = fit_data)
+lr_p     <- pchisq(lr$chisq, df = length(lr$n) - 1, lower.tail = FALSE)
+s_at     <- summary(km_all, times = c(1, 2, 3, 4, 5, 8, 10))
+cif      <- timepoints(ci, times = c(2, 4, 6, 8))$est
+zph_tv   <- cox.zph(cox_tv, transform = "km")
+zph_spl  <- cox.zph(cox_tv_split, transform = "km")
+hr_tv    <- summary(cox_tv)$conf.int
+data_through <- max(team_games$gameday[team_games$season == CURRENT_SEASON])
+week_through <- max(games$week[games$season == CURRENT_SEASON & games$game_type == "REG"])
+n_fired  <- sum(fit_data$status)
+n_fired_after_playoffs <- sum(tv_data$fired_after == 1 & tv_data$playoff)
+
+flagged <- function(z) {
+  tb <- z$table[rownames(z$table) != "GLOBAL", , drop = FALSE]
+  hits <- rownames(tb)[tb[, "p"] < 0.05]
+  if (length(hits) == 0) "none at the 5% level"
+  else paste(esc(coalesce(all_labels[hits], hits)), collapse = "; ")
+}
+
+median_text <- function(row) {
+  sprintf("%s seasons (95%% CI %s–%s)", row[["median"]], row[["0.95LCL"]], row[["0.95UCL"]])
+}
+
+## Sections -------------------------------------------------------------------
+tiles <- paste0(
+  '<div class="tiles">',
+  sprintf('<div class="tile"><div class="tile-num">%s</div><div class="tile-label">median seasons until a coach is fired</div></div>',
+          km_tab[["median"]]),
+  sprintf('<div class="tile"><div class="tile-num">%s</div><div class="tile-label">of coaches fired by the end of season 4</div></div>',
+          pct(cif["Fired", "4"])),
+  sprintf('<div class="tile"><div class="tile-num">%s</div><div class="tile-label">lower firing risk per +10 pts of win %%</div></div>',
+          pct(1 - hr_tv["win10", "exp(coef)"])),
+  sprintf('<div class="tile"><div class="tile-num">%s</div><div class="tile-label">lower firing risk after a playoff season</div></div>',
+          pct(1 - hr_tv["playoffTRUE", "exp(coef)"])),
+  "</div>")
+
+sec_data <- paste0(
+  "<h2>Data</h2>",
+  sprintf("<p>%d permanent head-coaching stints began in 2000–%d; %d have at least one completed season and are used for fitting (%d firings). %d interim-only stints are excluded. Game data runs through %s (week %d of the %d season).</p>",
+          nrow(tenure), CURRENT_SEASON, nrow(fit_data), n_fired,
+          nrow(interim_stints), format(data_through, "%B %-d, %Y"), week_through, CURRENT_SEASON),
+  "<ul>",
+  '<li><strong>Games and coaches:</strong> <a href="https://github.com/nflverse/nfldata">nflverse</a> game results with the credited head coach, corrected for mid-season changes using departure dates from Wikipedia.</li>',
+  "<li><strong>Why each coach left:</strong> Wikipedia's yearly &ldquo;NFL season&rdquo; articles, with a quote and URL per departure.</li>",
+  "<li><strong>Birth dates:</strong> Wikidata. <strong>Pre-1999 head-coaching jobs:</strong> coach Wikipedia infoboxes. <strong>GM and owner tenures:</strong> Wikipedia.</li>",
+  "</ul>",
+  "<h3>Terms</h3><dl>",
+  "<dt>Fired</dt><dd>The club ended the job, including &ldquo;mutual&rdquo; partings, contracts the club declined to renew, and a reassignment out of the head-coach role.</dd>",
+  "<dt>Censoring</dt><dd>We know a coach lasted at least <em>t</em> seasons without being fired, but not what came after. Active coaches, resignations and retirements are censored.</dd>",
+  "<dt>Hazard</dt><dd>The chance of being fired after season <em>t</em>, given the coach reached season <em>t</em>.</dd>",
+  "<dt>Hazard ratio (HR)</dt><dd>How a covariate multiplies that per-season risk. HR 0.6 means 40% lower risk in any given season, other things equal.</dd>",
+  "<dt>Counting-process format</dt><dd>One row per coach per season, written as an interval (<em>k</em>&minus;1, <em>k</em>], carrying that season's covariates and an event flag that is 1 only in the season he was fired. This lets covariates such as win % change over time.</dd>",
+  "</dl>")
+
+sec_km <- paste0(
+  "<h2>1. How long tenures last</h2>",
+  sprintf("<p>Kaplan–Meier median: <strong>%s</strong>. First-time NFL head coaches: %s. Previous NFL head coaches: %s. Log-rank test for a difference: p = %s.</p>",
+          median_text(km_tab), median_text(km_bg_tb[1, ]), median_text(km_bg_tb[2, ]), pval(lr_p)),
+  html_table(tibble(`Seasons` = s_at$time,
+                    `At risk` = s_at$n.risk,
+                    `Share not yet fired` = pct(s_at$surv),
+                    `95% CI` = paste0(pct(s_at$lower), "–", pct(s_at$upper))),
+             num_cols = 1:4),
+  img("plots/01_km_overall.png", "Kaplan–Meier curve of time until firing, all coaches"),
+  img("plots/02_km_by_background.png", "Kaplan–Meier curves by prior NFL head-coaching experience"))
+
+sec_cox <- paste0(
+  "<h2>2. What's known on hiring day</h2>",
+  sprintf("<p>Cox model with baseline covariates. Concordance %s (0.5 is a coin flip).</p>",
+          num(cox_base$concordance[["concordance"]])),
+  hr_table(cox_base, base_labels),
+  img("plots/03_cox_baseline_forest.png", "Forest plot of baseline Cox hazard ratios"))
+
+sec_ph <- paste0(
+  "<h2>3. Checking proportional hazards</h2>",
+  "<p>The Cox model assumes each hazard ratio is constant across tenure. <code>cox.zph</code> tests this by checking whether each covariate's scaled Schoenfeld residuals trend over time; a small p-value means the effect drifts.</p>",
+  sprintf("<p><strong>Baseline model</strong> — violations: %s.</p>", flagged(zph)),
+  zph_table(zph, all_labels),
+  img("plots/04_cox_zph.png", "Scaled Schoenfeld residuals against time for the baseline Cox model"),
+  sprintf("<p><strong>Time-varying model</strong> — violations: %s.</p>", flagged(zph_tv)),
+  zph_table(zph_tv, all_labels),
+  "<p>Holding this season's win % fixed, a bigger &ldquo;change from last season&rdquo; means last season was worse, so that term measures two bad years in a row. Letting its effect differ between seasons 1–2 (when last season was usually the previous coach's team) and season 3 onward:</p>",
+  hr_table(cox_tv_split, all_labels),
+  sprintf("<p>Proportional-hazards check for the split model: global p = %s; violations: %s. The current-coach estimates in section 6 use this split model.</p>",
+          pval(zph_spl$table["GLOBAL", "p"]), flagged(zph_spl)))
+
+sec_tv <- paste0(
+  "<h2>4. Season by season</h2>",
+  sprintf("<p>Time-varying Cox model on %d coach-seasons and %d firings, using only what was known when each decision was made. Standard errors are clustered by stint. Concordance %s.</p>",
+          cox_tv$n, cox_tv$nevent, num(cox_tv$concordance[["concordance"]])),
+  hr_table(cox_tv, all_labels),
+  sprintf("<p>Each extra 10 points of win %% (about 1.7 wins) multiplies that season's firing risk by %s; a playoff appearance multiplies it by %s. Only %d of %d firings came right after a playoff season.</p>",
+          num(hr_tv["win10", "exp(coef)"]), num(hr_tv["playoffTRUE", "exp(coef)"]),
+          n_fired_after_playoffs, n_fired),
+  img("plots/05_cox_timevarying_forest.png", "Forest plot of time-varying Cox hazard ratios"))
+
+sec_cr <- paste0(
+  "<h2>5. How tenures end</h2>",
+  "<p>Cumulative incidence gives the real-world share of coaches who have left each way by season <em>t</em>, allowing for the fact that a coach who retired can no longer be fired.</p>",
+  html_table(tibble(`By end of season` = colnames(cif),
+                    Fired = pct(cif["Fired", ]),
+                    `Resigned, retired or other` = pct(cif["Resigned, retired or other", ])),
+             num_cols = 1:3),
+  img("plots/06_competing_risks.png", "Cumulative incidence of firing and of other exits"))
+
+sec_now <- paste0(
+  sprintf("<h2>6. Current coaches: estimated risk of being fired after %d</h2>", CURRENT_SEASON),
+  sprintf("<p>Each team's %d season is projected from results through week %d plus .500 football and an even point differential the rest of the way. Playoffs aren't decided yet, so each coach gets two numbers.</p>",
+          CURRENT_SEASON, week_through),
+  '<p class="note"><strong>Model estimates, not predictions.</strong> The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries or owner temperament, and the baseline risk for very long tenures is pooled and imprecise.</p>',
+  img("plots/07_current_coach_risk.png", "Estimated chance each current coach is fired after the season"),
+  html_table(risk |>
+               transmute(Coach = coach, Team = team, Season = season_number,
+                         Record = record_2026,
+                         `Projected win %` = num(proj_win_pct, 3),
+                         `If team misses playoffs` = pct(p_fired_if_miss),
+                         `If team makes playoffs` = pct(p_fired_if_playoff)),
+             num_cols = 3:7))
+
+sec_lim <- paste0(
+  "<h2>Limitations</h2><ul>",
+  sprintf("<li>Small sample: %d firings, so intervals for anything beyond winning and playoffs are wide.</li>", n_fired),
+  "<li>Seasons are a coarse time scale with many ties (Efron's method is used).</li>",
+  "<li>Some coding is judgment: which partings count as firings, who held final personnel say in teams without a conventional GM, and dates known only to the month or year. The research files keep the raw wording so these can be re-coded.</li>",
+  "</ul>")
+
+css <- r"---(
+:root { --bg:#fcfcfb; --surface:#ffffff; --text:#1f1f1e; --muted:#5f5e5a;
+        --border:#e4e3df; --accent:#2a78d6; --note:#f6f1e7; color-scheme: light; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#1a1a19; --surface:#242423; --text:#f0efec; --muted:#c3c2b7;
+          --border:#3a3a38; --accent:#3987e5; --note:#2e2a22; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text);
+       font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 900px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 8px; }
+h2 { font-size: 1.35rem; margin: 48px 0 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+h3 { font-size: 1.05rem; margin: 24px 0 8px; }
+.lede { color: var(--muted); margin: 0 0 24px; }
+a { color: var(--accent); }
+code { font-size: 0.9em; }
+.tiles { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin: 24px 0; }
+.tile { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+.tile-num { font-size: 1.8rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile-label { color: var(--muted); font-size: 0.9rem; line-height: 1.35; }
+figure { margin: 20px 0; }
+figure img { width:100%; height:auto; display:block; border-radius:8px;
+             border:1px solid var(--border); background:#fff; }
+.table-wrap { overflow-x:auto; margin: 16px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+caption { text-align:left; color:var(--muted); padding-bottom:6px; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align:left; white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+dl dt { font-weight: 600; margin-top: 10px; }
+dl dd { margin: 2px 0 0 0; color: var(--muted); }
+.note { background: var(--note); border-radius: 8px; padding: 12px 14px; }
+footer { margin-top: 48px; color: var(--muted); font-size: 0.85rem; }
+)---"
+
+report <- paste0(
+  '<!doctype html><html lang="en"><head><meta charset="utf-8">',
+  '<meta name="viewport" content="width=device-width, initial-scale=1">',
+  "<title>NFL Coach Tenure</title>",
+  '<meta name="description" content="Survival analysis of how long NFL head coaches hired since 2000 last before being fired.">',
+  "<style>", css, "</style></head><body><main>",
+  "<h1>How long do NFL head coaches last?</h1>",
+  sprintf('<p class="lede">A survival analysis of head coaches hired %d–%d, with data through week %d of the %d season.</p>',
+          min(tenure$hire_season), CURRENT_SEASON, week_through, CURRENT_SEASON),
+  tiles, sec_data, sec_km, sec_cox, sec_ph, sec_tv, sec_cr, sec_now, sec_lim,
+  sprintf("<footer>Generated %s by coach_tenure.R. Sources: nflverse, Wikipedia, Wikidata.</footer>",
+          format(Sys.Date(), "%B %-d, %Y")),
+  "</main></body></html>")
+
+writeLines(report, "output/coach_tenure_report.html", useBytes = TRUE)
+cat("\nHTML report: output/coach_tenure_report.html (",
+    round(file.size("output/coach_tenure_report.html") / 1024), "KB )\n", sep = "")
 
 cat("\nDone. Plots in plots/, tables in data/ and output/.\n")

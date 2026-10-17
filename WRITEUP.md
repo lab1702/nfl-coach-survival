@@ -2,6 +2,8 @@
 
 Run it with `Rscript coach_tenure.R`. It takes about 30 seconds. The full console output is saved in `output/run_log.txt`.
 
+The script also writes `output/coach_tenure_report.html`, a single self-contained page (about 1 MB) with every plot embedded and no external files. Copy it to any web server as-is. Its numbers are computed on each run, so it stays current when the data updates; the tables below are a snapshot from the run through week 6 of 2026.
+
 ## Data
 
 There are 190 permanent head-coaching stints that started in 2000–2026. 180 of them have at least one completed season and are used for model fitting. The 32 stints in progress include the 10 coaches hired for 2026.
