@@ -21,6 +21,7 @@ Pro Football Reference blocks automated access, so I didn't use it. Nothing was 
 **Corrections applied to nflverse:**
 - Its coach column misses some mid-season changes. For example, it credits Ken Whisenhunt with all of Tennessee's 2015 games. 73 games are re-credited to the interim coach named on Wikipedia, using the departure date.
 - For 2026 it still lists Gannon (ARI), Morris (ATL) and McDermott (BUF), all fired in January 2026. Their 15 games are re-credited to LaFleur, Stefanski and Brady.
+- A few coach names are wrong: two misspellings, and two different coaches both listed as "Jim Mora". They are corrected from `data/research/coach_name_fixes.csv`.
 
 **Definitions:**
 - **Seasons coached:** seasons in which the coach coached at least one game for the team. A mid-season firing counts that season.

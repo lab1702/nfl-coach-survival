@@ -16,7 +16,7 @@
 #   4. Proportional-hazards check (cox.zph)
 #   5. Time-varying Cox model in counting-process (start, stop] format
 #   6. Competing risks: cumulative incidence of firing vs. other exits
-#   7. Model-based firing risk for current coaches after the 2026 season
+#   7. Model-based firing risk for current coaches after the season in progress
 #   8. A self-contained HTML report (output/coach_tenure_report.html) with
 #      every plot embedded, ready to drop on any web server
 #
@@ -32,6 +32,8 @@
 #     (the nflverse data starts in 1999), from each coach's Wikipedia infobox.
 #   * data/research/gm_tenures.csv, owner_tenures.csv – GM and controlling-owner
 #     tenures by team, from Wikipedia.
+#   * data/research/coach_name_fixes.csv – coach names the games file gets
+#     wrong, and the right ones.
 #
 # Requirements: R >= 4.1 (native pipe, \(x) lambdas, raw strings), dplyr >= 1.1.0
 # (slice_max(by =)), ggplot2 >= 3.4.0 (linewidth), readr >= 2.0.0
@@ -91,15 +93,39 @@ dir.create("plots", showWarnings = FALSE)
 dir.create("output", showWarnings = FALSE)
 
 # Problems that don't stop the run but need a maintainer's attention (stale
-# research files, a missing birth date, a failed download, ...). Each is
-# raised as an ordinary warning and also kept, so the full list can be
+# research files, a missing birth date, a failed download, ...) are raised
+# as ordinary warnings with warn(). Every warning of the run is also kept:
+# the script's own and any that R or a package raises (a join that matches
+# a row twice, a model that doesn't converge), so the full list can be
 # written to output/run_warnings.txt at the end. The Docker refresh job
-# prints that file after every successful run.
+# prints that file after every successful run. Warnings the script
+# deliberately silences (suppressWarnings, tryCatch) never get this far.
 run_warnings <- character()
-warn <- function(...) {
-  msg <- paste0(...)
-  run_warnings <<- c(run_warnings, msg)
-  warning(msg, call. = FALSE)
+record_warning <- function(w) {
+  run_warnings <<- c(run_warnings, gsub("\\s+", " ", trimws(conditionMessage(w))))
+}
+# Registered once per R session, so sourcing the script again doesn't record
+# everything twice. R only allows this at top level: run the script with
+# Rscript, or source() it outside try() / tryCatch().
+if (!isTRUE(getOption("coach_tenure.warnings_recorded"))) {
+  globalCallingHandlers(warning = record_warning)
+  options(coach_tenure.warnings_recorded = TRUE)
+}
+warn <- function(...) warning(paste0(...), call. = FALSE)
+
+# Research files are edited by hand, and a row entered twice would be joined
+# twice: a coach with two birth-date rows would have every stint doubled, in
+# the models and on the hot seat. Keep the first row per key and warn.
+first_per_key <- function(df, keys, file) {
+  dup <- df |>
+    filter(n() > 1, .by = all_of(keys)) |>
+    distinct(across(all_of(keys)))
+  if (nrow(dup) > 0) {
+    warn(file, ": more than one row for ",
+         paste(do.call(paste, c(as.list(dup), sep = " / ")), collapse = "; "),
+         ". Only the first is used; remove the duplicate.")
+  }
+  distinct(df, across(all_of(keys)), .keep_all = TRUE)
 }
 
 # Analysis window. The season settings are derived from the games data in
@@ -138,6 +164,16 @@ team_abbr <- function(x) {
   for (k in names(key)) out[is.na(out) & str_detect(x, fixed(k))] <- key[[k]]
   out
 }
+# A team name team_abbr() doesn't recognise would drop its row from every
+# join without a word, so name it.
+check_teams <- function(df, file) {
+  bad <- unique(df$team[is.na(team_abbr(df$team))])
+  if (length(bad) > 0) {
+    warn(file, ": unrecognised team name ", paste0('"', bad, '"', collapse = ", "),
+         ". Rows with it are ignored; use the team's full name (e.g. \"Las Vegas Raiders\").")
+  }
+  df
+}
 
 # Normalise coach names for joining across sources ("Jim Mora Jr." vs
 # "Jim L. Mora" etc. are handled by also joining on team and season).
@@ -153,29 +189,56 @@ name_key <- function(x) {
 ## 1a. Game results with the credited head coach ------------------------------
 # The file updates weekly in season, so a cached copy older than a day is
 # re-downloaded (GAMES_MAX_AGE_HOURS overrides the limit; the Docker refresh
-# job sets it to 0 to always refresh). If the download fails, an existing
-# copy is used instead.
+# job sets it to 0 to always refresh). If the download fails, or isn't a
+# sound games file, an existing copy is used instead.
 games_url  <- "https://github.com/nflverse/nfldata/raw/master/data/games.csv"
 games_file <- "data/raw/games.csv"
+needed_cols <- c("game_id", "season", "game_type", "gameday", "week", "home_team", "away_team",
+                 "home_score", "away_score", "home_coach", "away_coach")
 max_age_hours <- suppressWarnings(as.numeric(Sys.getenv("GAMES_MAX_AGE_HOURS", "24")))
 if (is.na(max_age_hours)) max_age_hours <- 24
 stale <- !file.exists(games_file) ||
   difftime(Sys.time(), file.mtime(games_file), units = "hours") >= max_age_hours
+
+# What a games file holds: how many games, and the date of the latest one
+# played. NULL if it can't be read or lacks the columns this script uses
+# (read_csv copes with a byte-order mark or quoted column names).
+games_summary <- function(path) {
+  g <- tryCatch(suppressWarnings(read_csv(path, col_types = cols(.default = col_character()),
+                                          show_col_types = FALSE, lazy = FALSE)),
+                error = function(e) NULL)
+  if (is.null(g) || !all(needed_cols %in% names(g))) return(NULL)
+  played <- g$gameday[!is.na(g$home_score) & !is.na(g$gameday)]
+  list(rows = nrow(g), last_played = if (length(played) > 0) max(played) else NA_character_)
+}
+# Why a download must not replace the cache (NULL if it may). A proxy error
+# page fails the first test; a file cut short, or published half-written,
+# fails the others: the real file only ever gains games and results.
+download_problem <- function(path) {
+  new <- games_summary(path)
+  if (is.null(new)) return("it isn't the games file")
+  if (is.na(new$last_played)) return("it has no played games")
+  old <- if (file.exists(games_file)) games_summary(games_file) else NULL
+  if (!is.null(old) && !is.na(old$last_played)) {
+    if (new$last_played < old$last_played) return("its results stop earlier than the cached copy's")
+    if (new$rows < 0.95 * old$rows) return("it has far fewer games than the cached copy")
+  }
+  NULL
+}
 if (stale) {
   tmp <- tempfile(fileext = ".csv")
   ok <- tryCatch(download.file(games_url, tmp, mode = "wb", quiet = TRUE) == 0,
                  error = function(e) FALSE, warning = function(w) FALSE)
-  # Accept the download only if it looks like the games file (its header has
-  # the columns this script uses); a proxy error page must not replace the
-  # cache. read_csv copes with a byte-order mark or quoted column names.
-  needed_cols <- c("game_id", "season", "game_type", "gameday", "week", "home_team", "away_team",
-                   "home_score", "away_score", "home_coach", "away_coach")
-  header <- if (ok) tryCatch(names(read_csv(tmp, n_max = 0, show_col_types = FALSE)),
-                             error = function(e) character()) else character()
-  copied <- all(needed_cols %in% header) && file.copy(tmp, games_file, overwrite = TRUE)
-  if (!copied) {
-    if (!file.exists(games_file)) stop("Could not download ", games_url)
-    warn("Could not refresh ", games_url, "; using the cached copy from ",
+  problem <- if (ok) download_problem(tmp) else "the download failed"
+  # Replace the cache in one step, so an interrupted copy can't damage it.
+  part <- paste0(games_file, ".part")
+  if (is.null(problem) &&
+      !(file.copy(tmp, part, overwrite = TRUE) && file.rename(part, games_file))) {
+    problem <- "it couldn't be saved"
+  }
+  if (!is.null(problem)) {
+    if (!file.exists(games_file)) stop("Could not download ", games_url, ": ", problem)
+    warn("Could not refresh ", games_url, " (", problem, "); using the cached copy from ",
          format(file.mtime(games_file), "%Y-%m-%d"))
   }
 }
@@ -193,6 +256,22 @@ message("Last complete season: ", LAST_COMPLETE_SEASON, ". ",
 relocated <- c(OAK = "LV", SD = "LAC", STL = "LA")   # one code per franchise
 franchise <- function(x) unname(coalesce(relocated[x], x))
 
+# Coach names nflverse gets wrong (a misspelling, or two coaches under one
+# name) are corrected from data/research/coach_name_fixes.csv, so a new one
+# is a data edit like any other research fix. A row with a team code applies
+# to that team's games only and wins over a row for any team.
+name_fixes <- read_csv("data/research/coach_name_fixes.csv", show_col_types = FALSE,
+                       col_types = cols(.default = col_character())) |>
+  first_per_key(c("nflverse_name", "team"), "coach_name_fixes.csv")
+fix_coach_names <- function(coach, team) {
+  one_team <- name_fixes |> filter(!is.na(team))
+  any_team <- name_fixes |> filter(is.na(team))
+  coalesce(one_team$correct_name[match(paste(coach, team),
+                                       paste(one_team$nflverse_name, one_team$team))],
+           any_team$correct_name[match(coach, any_team$nflverse_name)],
+           coach)
+}
+
 # One row per team per game.
 team_games <- bind_rows(
   games |> transmute(game_id, season, game_type, gameday, team = home_team,
@@ -202,19 +281,17 @@ team_games <- bind_rows(
 ) |>
   mutate(team    = franchise(team),
          gameday = as.Date(gameday),
-         coach   = recode(coach, "Klint Kubliak" = "Klint Kubiak"),  # typo
-         # Two different coaches are both "Jim Mora" in the source.
-         coach   = case_when(coach == "Jim Mora" & team == "IND" ~ "Jim Mora Sr.",
-                             coach == "Jim Mora" ~ "Jim Mora Jr.",
-                             TRUE ~ coach)) |>
+         coach   = fix_coach_names(coach, team)) |>
   arrange(team, gameday)
 
 ## 1b. Departures (reasons) from Wikipedia ------------------------------------
 changes <- read_csv("data/research/coach_changes.csv", show_col_types = FALSE) |>
+  check_teams("coach_changes.csv") |>
   mutate(team_code   = team_abbr(team),
          coach_key   = name_key(departing_coach),
          interim_key = name_key(interim_coach),
-         departure_date = as.Date(departure_date))
+         departure_date = as.Date(departure_date)) |>
+  first_per_key(c("team_code", "last_season_coached", "coach_key"), "coach_changes.csv")
 
 # How far the coaching research goes. The GM and owner files can't be
 # checked this way (a team with no change leaves no row), so the warning
@@ -465,11 +542,11 @@ stints <- stints_all |> filter(any_start, hire_season >= 2000)
 dep <- changes |>
   filter(!departing_was_interim) |>
   transmute(team = team_code, last_season = last_season_coached, coach_key,
-            reason_category, reason_raw, evidence, source_url)
+            departing_coach, reason_category, reason_raw, evidence, source_url)
 
 stints <- stints |>
   mutate(coach_key = name_key(coach)) |>
-  left_join(dep, by = c("team", "last_season", "coach_key")) |>
+  left_join(dep |> select(-departing_coach), by = c("team", "last_season", "coach_key")) |>
   mutate(
     # "Fired" here means the club ended the job. Besides outright firings
     # that includes: "mutually agreed to part ways" (5 cases: Fox 2015,
@@ -523,7 +600,11 @@ if (nrow(no_record) > 0) {
   stints <- stints |> mutate(event_type = coalesce(event_type, "unknown"))
 }
 # Reverse check: departures that match no stint should all be coaches hired
-# before 2000 (outside the sample) or who never coached a game.
+# before 2000 (outside the sample) or who never coached a game. Any other is
+# a row that doesn't say what it was meant to (a name, team or
+# last_season_coached that differs from the games data). It changes nothing,
+# and for a coach who is still credited with his team's latest game nothing
+# else would give it away, so it is a warning.
 orphans <- dep |>
   anti_join(stints |> select(team, last_season, coach_key),
             by = c("team", "last_season", "coach_key")) |>
@@ -532,14 +613,18 @@ orphans <- dep |>
             by = c("team", "last_season", "coach_key")) |>
   filter(!is.na(last_season))  # Belichick's one-day 2000 Jets job: no games
 if (nrow(orphans) > 0) {
-  message("Departure records not matched to any stint (check these):")
-  print(orphans |> select(team, last_season, coach_key, reason_category))
+  warn("coach_changes.csv: departure rows that match no coaching stint: ",
+       paste0(orphans$departing_coach, " (", orphans$team, ", last season ",
+              orphans$last_season, ")", collapse = ", "),
+       ". Check the coach's name, the team and last_season_coached against the ",
+       "games data. Until a row matches, the coach still counts as in the job.")
 }
 
 ## 1f. Baseline covariates ----------------------------------------------------
 births <- read_csv("data/research/coach_birthdates.csv", show_col_types = FALSE,
                    col_types = cols(birth_date = col_character())) |>
   select(coach, birth_date) |>
+  first_per_key("coach", "coach_birthdates.csv") |>
   # Wikidata gives only a birth year for Mike LaFleur ("1987-00-00"); use
   # mid-year, which is within ±0.5 years of his true age.
   mutate(birth_date = as.Date(str_replace(birth_date, "-00-00$", "-07-01")))
@@ -593,8 +678,10 @@ if (nrow(no_birth) > 0) {
 first_season_of <- function(d) if_else(month(d) <= 8, year(d), year(d) + 1)
 front_office <- bind_rows(
   read_csv("data/research/gm_tenures.csv", show_col_types = FALSE) |>
+    check_teams("gm_tenures.csv") |>
     transmute(team, start_date = as.Date(start_date), kind = "gm"),
   read_csv("data/research/owner_tenures.csv", show_col_types = FALSE) |>
+    check_teams("owner_tenures.csv") |>
     transmute(team, start_date = as.Date(start_date), kind = "owner")) |>
   mutate(team = team_abbr(team), season = first_season_of(start_date)) |>
   filter(!is.na(season))
@@ -645,7 +732,7 @@ tenure <- stints |>
   arrange(hire_season, team)
 
 # Event flag on the season row in which the firing happened (the stint's
-# last season). Seasons after 2025 are not used for fitting.
+# last season). Seasons after the last complete one are not used for fitting.
 coach_seasons <- coach_seasons |>
   left_join(tenure |> select(stint_id, status, last_season, event_type),
             by = "stint_id") |>
@@ -911,7 +998,8 @@ ggsave("plots/06_competing_risks.png", p_ci, width = 9, height = 5.5, dpi = 150)
 #
 # P(fired after season k) = 1 − exp(−ΔH0(k) · exp(x'b)), where ΔH0(k) is the
 # baseline hazard for tenure season k. We use the split model from section
-# 5, since it satisfies the proportional-hazards assumption.
+# 5, the one built to meet the proportional-hazards assumption (the report
+# prints its check each run).
 #
 # ΔH0 is calibrated to that formula: for a group of tenure seasons, it is the
 # value at which the predicted probabilities of every coach-season at risk in
@@ -1147,6 +1235,29 @@ median_text <- function(row) {
   sprintf("%s seasons (95%% CI %s–%s)", row[["median"]], row[["0.95LCL"]], row[["0.95UCL"]])
 }
 
+# The sentences that state a conclusion are chosen from the numbers, like
+# the numbers themselves: the page is rebuilt daily and must not go on
+# saying something a later fit no longer shows.
+c_base <- cox_base$concordance[["concordance"]]
+claim_km <- if (is.na(km_tab[["median"]])) {
+  "Fewer than half of coaches have been fired at any tenure length seen so far."
+} else {
+  sprintf("Half of coaches are fired by the end of season %s.", km_tab[["median"]])
+}
+claim_cox <- if (c_base < 0.6) "barely predict tenure" else
+  if (c_base < 0.7) "predict tenure only modestly" else "do predict tenure"
+chg_p <- zph_tv$table["win_chg10", "p"]
+claim_split <- if (chg_p < 0.05) {
+  sprintf("Its effect differs early and late in a tenure (PH check p = %s), so the model splits it.", pval(chg_p))
+} else {
+  sprintf("The model splits it into early and late tenure, although on this run the single term passes the PH check (p = %s).", pval(chg_p))
+}
+claim_win <- if (hr_tv["win10", "exp(coef)"] < 1) "Win and you stay. " else ""
+fired8 <- cif["Fired", "8"]
+other8 <- cif["Resigned, retired or other", "8"]
+claim_exits <- if (fired8 > 2 * other8) "Firing is the dominant exit" else
+  if (fired8 > other8) "Firing is the most common exit" else "Most exits are not firings"
+
 
 ## Layout pieces ----------------------------------------------------------------
 section <- function(id, number, title, ...) {
@@ -1214,8 +1325,8 @@ sec_data <- section("data", "00", "The data",
   "</dl></div></div>")
 
 sec_km <- section("tenure", "01", "How long tenures last",
-  takeaway(sprintf("Half of coaches are fired by the end of season %s. Only %s make it through season 8.",
-                   km_tab[["median"]], pct(s_at$surv[s_at$time == 8]))),
+  takeaway(sprintf("%s %s make it through season 8 without being fired.",
+                   claim_km, pct(s_at$surv[s_at$time == 8]))),
   sprintf("<p>Kaplan&ndash;Meier median: <strong>%s</strong>. First-time NFL head coaches: %s. Previous NFL head coaches: %s. Log-rank test for a difference: p = %s.</p>",
           median_text(km_tab), median_text(km_bg_tb[1, ]), median_text(km_bg_tb[2, ]), pval(lr_p)),
   html_table(tibble(`Seasons` = s_at$time,
@@ -1227,8 +1338,8 @@ sec_km <- section("tenure", "01", "How long tenures last",
   img("plots/02_km_by_background.png", "Kaplan–Meier curves by prior NFL head-coaching experience"))
 
 sec_cox <- section("hiring-day", "02", "What&rsquo;s known on hiring day",
-  takeaway(sprintf("Age, experience and the team&rsquo;s prior record barely predict tenure: concordance %s, where 0.50 is a coin flip.",
-                   num(cox_base$concordance[["concordance"]]))),
+  takeaway(sprintf("Age, experience and the team&rsquo;s prior record %s: concordance %s, where 0.50 is a coin flip.",
+                   claim_cox, num(c_base))),
   hr_table(cox_base, base_labels),
   img("plots/03_cox_baseline_forest.png", "Forest plot of baseline Cox hazard ratios"))
 
@@ -1241,13 +1352,15 @@ sec_ph <- section("ph-check", "03", "Checking proportional hazards",
           flagged(zph_tv), zph_table(zph_tv, all_labels)),
   "</div>",
   img("plots/04_cox_zph.png", "Scaled Schoenfeld residuals against time for the baseline Cox model"),
-  takeaway("Holding this season&rsquo;s win % fixed, a bigger &ldquo;change from last season&rdquo; means last season was worse: the term measures two bad years in a row. Its effect differs early and late in a tenure, so the model splits it."),
+  takeaway(paste("Holding this season&rsquo;s win % fixed, a bigger &ldquo;change from last season&rdquo; means last season was worse: the term measures two bad years in a row.",
+                 claim_split)),
   hr_table(cox_tv_split, all_labels),
   sprintf('<p class="small">Split model PH check: global p = %s; violations: %s. The hot-seat estimates use this model.</p>',
           pval(zph_spl$table["GLOBAL", "p"]), flagged(zph_spl)))
 
 sec_tv <- section("season", "04", "Season by season",
-  takeaway(sprintf("Win and you stay. Each +10 pts of win %% (about 1.7 wins) %s that season&rsquo;s firing risk by %s; a playoff trip %s it by %s. Only %d of %d firings came right after a playoff season.",
+  takeaway(sprintf("%sEach +10 pts of win %% (about 1.7 wins) %s that season&rsquo;s firing risk by %s; a playoff trip %s it by %s. %d of %d firings came right after a playoff season.",
+                   claim_win,
                    hr_verb(hr_tv["win10", "exp(coef)"]), hr_size(hr_tv["win10", "exp(coef)"]),
                    hr_verb(hr_tv["playoffTRUE", "exp(coef)"]), hr_size(hr_tv["playoffTRUE", "exp(coef)"]),
                    n_fired_after_playoffs, n_fired)),
@@ -1257,8 +1370,8 @@ sec_tv <- section("season", "04", "Season by season",
   img("plots/05_cox_timevarying_forest.png", "Forest plot of time-varying Cox hazard ratios"))
 
 sec_cr <- section("exits", "05", "How tenures end",
-  takeaway(sprintf("Firing is the dominant exit: by season 8, %s of coaches have been fired and %s have left another way.",
-                   pct(cif["Fired", "8"]), pct(cif["Resigned, retired or other", "8"]))),
+  takeaway(sprintf("%s: by season 8, %s of coaches have been fired and %s have left another way.",
+                   claim_exits, pct(fired8), pct(other8))),
   "<p>Cumulative incidence gives the real-world share of coaches who have left each way by season <em>t</em>, allowing for the fact that a coach who retired can no longer be fired.</p>",
   html_table(tibble(`By end of season` = colnames(cif),
                     Fired = pct(cif["Fired", ]),
@@ -1338,7 +1451,8 @@ if (season_in_progress) {
   sec_now <- section("hot-seat", "06", sprintf("The hot seat: risk of being fired after %d", CURRENT_SEASON),
     intro,
     spotlight,
-    '<p class="note"><strong>Model estimates, not predictions.</strong> The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries or owner temperament, and the baseline risk from season 5 on is pooled across seasons and imprecise.</p>',
+    paste0('<p class="note"><strong>Model estimates, not predictions.</strong> The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries or owner temperament, and the baseline risk from season ',
+           POOL_FROM, " on is pooled across seasons and imprecise.</p>"),
     board,
     unrated_note,
     departures_note,
@@ -1499,8 +1613,9 @@ writeLines(report, "output/coach_tenure_report.html", useBytes = TRUE)
 cat("\nHTML report: output/coach_tenure_report.html (",
     round(file.size("output/coach_tenure_report.html") / 1024), "KB )\n", sep = "")
 
-# The warnings raised through warn(), one per line (an empty file if none),
-# for whoever runs this unattended.
+# Every warning of the run, one per line (an empty file if none), for
+# whoever runs this unattended.
+run_warnings <- unique(run_warnings)
 writeLines(run_warnings, "output/run_warnings.txt")
 if (length(run_warnings) > 0) {
   cat("\n", length(run_warnings), " warning(s) need attention; see output/run_warnings.txt\n", sep = "")

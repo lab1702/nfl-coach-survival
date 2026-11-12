@@ -11,11 +11,12 @@
 # into a tight loop of re-runs and re-downloads.
 set -uo pipefail
 
-SITE=/site
+# SITE and APP_DIR are only ever changed by tests/refresh_test.sh.
+SITE="${SITE:-/site}"
 REFRESH_TIME="${REFRESH_TIME:-10:00}"
 RETRY_MINUTES="${RETRY_MINUTES:-60}"
 MAX_RETRIES="${MAX_RETRIES:-6}"
-cd /app || exit 1
+cd "${APP_DIR:-/app}" || exit 1
 
 log() { echo "[$(date -Is)] $*"; }
 

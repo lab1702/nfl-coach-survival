@@ -1,0 +1,5 @@
+nflverse_name,team,correct_name,reason,source_url
+Klint Kubliak,NA,Klint Kubiak,Misspelled in the nflverse games file,https://en.wikipedia.org/wiki/Klint_Kubiak
+Jay Rosburg,NA,Jerry Rosburg,Wrong first name in the nflverse games file (Denver's interim coach in 2022),https://en.wikipedia.org/wiki/Jerry_Rosburg
+Jim Mora,IND,Jim Mora Sr.,"nflverse lists two coaches as ""Jim Mora""; the Colts' coach (1998–2001) is the father",https://en.wikipedia.org/wiki/Jim_E._Mora
+Jim Mora,NA,Jim Mora Jr.,"nflverse lists two coaches as ""Jim Mora""; the Falcons' (2004–2006) and Seahawks' (2009) coach is the son",https://en.wikipedia.org/wiki/Jim_L._Mora

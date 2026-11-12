@@ -16,6 +16,11 @@
 # Nothing in the project's own data/, plots/ or output/ is touched, and
 # nothing is downloaded.
 #
+# The last scenarios replay the script with mistakes planted in the research
+# files (a duplicated row, a mistyped departure, an unknown team) and check
+# that each is warned about, that warnings raised by R itself are recorded,
+# and that a bad download would not replace the cached games file.
+#
 # It needs data/raw/games.csv (run coach_tenure.R once first) covering the
 # 2025 season and September 2026; any later copy works, because every
 # scenario cuts the file off at its own date. The expectations are history
@@ -62,11 +67,13 @@ games_as_of <- function(date, last_season, unscheduled = character()) {
 # What each run reports back.
 state_vars <- c("LAST_COMPLETE_SEASON", "CURRENT_SEASON", "season_in_progress",
                 "regular_season_over", "playoff_field_known", "playoff_teams",
-                "risk", "tenure", "run_warnings", "through_text")
+                "risk", "tenure", "interim_stints", "run_warnings", "through_text")
 
 # Run one scenario in its own directory. `games` is the games file to use;
 # `setup` may edit the copied files (it gets the directory) before the run.
-replay <- function(games, setup = NULL) {
+# `probe` is R code (no single quotes) evaluated in the run's own session
+# once the script has finished; its value comes back as state$probe.
+replay <- function(games, setup = NULL, probe = "NULL") {
   dir <- tempfile("replay_")
   dir.create(file.path(dir, "data", "raw"), recursive = TRUE)
   file.copy("coach_tenure.R", dir)
@@ -74,8 +81,8 @@ replay <- function(games, setup = NULL) {
   write_csv(games, file.path(dir, games_file), na = "NA")
   if (!is.null(setup)) setup(dir)
 
-  code <- sprintf('source("coach_tenure.R"); saveRDS(mget(c(%s)), "state.rds")',
-                  paste0('"', state_vars, '"', collapse = ", "))
+  code <- sprintf('source("coach_tenure.R"); probe <- %s; saveRDS(mget(c(%s, "probe")), "state.rds")',
+                  probe, paste0('"', state_vars, '"', collapse = ", "))
   old <- setwd(dir)
   on.exit(setwd(old))
   status <- system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(code)),
@@ -86,6 +93,7 @@ replay <- function(games, setup = NULL) {
        state  = if (file.exists("state.rds")) readRDS("state.rds") else NULL,
        report = if (file.exists(report)) paste(readLines(report, warn = FALSE), collapse = "\n") else "",
        files  = list.files(c("output", "plots"), full.names = TRUE),
+       warnings_file = if (file.exists("output/run_warnings.txt")) readLines("output/run_warnings.txt") else NULL,
        log    = tail(readLines("log.txt", warn = FALSE), 15))
 }
 
@@ -95,6 +103,25 @@ remove_change <- function(pattern) function(dir) {
   stopifnot(sum(grepl(pattern, rows)) == 1)
   writeLines(rows[!grepl(pattern, rows)], f)
 }
+
+# Append rows to a research file (`rows` may be a function of its lines).
+add_rows <- function(dir, file, rows) {
+  f <- file.path(dir, "data/research", file)
+  old <- readLines(f)
+  writeLines(c(old, if (is.function(rows)) rows(old) else rows), f)
+}
+
+# For the download check: stand-ins for what a bad download can look like,
+# judged against the run's own games file as the cached copy.
+download_probe <- '{
+  g <- readLines(games_file)
+  as_file <- function(lines) { f <- tempfile(fileext = ".csv"); writeLines(lines, f); f }
+  verdict <- function(lines) { p <- download_problem(as_file(lines)); if (is.null(p)) "accepted" else p }
+  c(same      = verdict(g),
+    cut_short = verdict(head(g, length(g) %/% 2)),
+    no_games  = verdict(g[1]),
+    not_csv   = verdict("<html><body>502 Bad Gateway</body></html>"))
+}'
 
 # The 14 teams of the 2025 playoffs; Denver and Seattle had the byes.
 field_2025 <- c("BUF", "CAR", "CHI", "DEN", "GB", "HOU", "JAX", "LA", "LAC",
@@ -182,12 +209,51 @@ scenarios <- list(
         "2026 games go to Saleh" =
           any(ten$coach == "Robert Saleh" & ten$hire_season == 2026),
         "no departure reported missing" = !any(grepl("No departure record", r$state$run_warnings)))
-    })
+    }),
+
+  "Mistakes in the research files (14 Sep 2026)" = list(
+    games  = games_as_of("2026-09-14", 2026),
+    setup  = \(dir) {
+      # A retread's birth date entered again, a departure under a name the
+      # games data doesn't use, and a GM row with a misspelled team.
+      add_rows(dir, "coach_birthdates.csv", \(rows) grep("^Mike McCarthy,", rows, value = TRUE))
+      add_rows(dir, "coach_changes.csv",
+               '2026,Washington Commanders,Daniel Quinn,FALSE,2026,TRUE,2026-09-13,NA,Nobody Real,NA,Fired,fired,"x",https://example.org,NA')
+      add_rows(dir, "gm_tenures.csv",
+               "Las Vegas Raider,Nobody Real,General manager,2026-02-01,NA,day,https://example.org,NA")
+    },
+    checks = \(r) with(r$state, c(
+      "no stint counted twice"        = !any(duplicated(tenure[c("coach", "team", "hire_season")])),
+      "McCarthy's seasons not doubled" = identical(tenure$seasons[tenure$coach == "Mike McCarthy" & tenure$team == "GB"], 13L),
+      "duplicate birth date warned"   = any(grepl("coach_birthdates.csv: more than one row for Mike McCarthy", run_warnings, fixed = TRUE)),
+      "unmatched departure warned"    = any(grepl("match no coaching stint: Daniel Quinn (WAS, last season 2026)", run_warnings, fixed = TRUE)),
+      "Quinn still counts as active"  = any(tenure$coach == "Dan Quinn" & tenure$team == "WAS" & tenure$event_type == "active"),
+      "unknown team warned"           = any(grepl('gm_tenures.csv: unrecognised team name "Las Vegas Raider"', run_warnings, fixed = TRUE)),
+      "nothing else warned"           = length(run_warnings) == 3))),
+
+  "Warnings, name fixes and the download check (14 Sep 2026)" = list(
+    games  = games_as_of("2026-09-14", 2026),
+    setup  = \(dir) {      # a warning R raises itself, early in the script
+      f <- file.path(dir, "coach_tenure.R")
+      lines <- readLines(f)
+      at <- grep("^# ---- 1\\. Data", lines)
+      stopifnot(length(at) == 1)
+      writeLines(append(lines, 'invisible(as.integer("not a number"))', at), f)
+    },
+    probe  = download_probe,
+    checks = \(r) with(r$state, c(
+      "R's own warning is recorded"   = identical(run_warnings, "NAs introduced by coercion"),
+      "and written to the file"       = identical(r$warnings_file, "NAs introduced by coercion"),
+      "nflverse name corrected"       = "Jerry Rosburg" %in% interim_stints$coach && !"Jay Rosburg" %in% interim_stints$coach,
+      "same file accepted"            = probe[["same"]] == "accepted",
+      "file cut short rejected"       = grepl("stop earlier", probe[["cut_short"]]),
+      "file with no games rejected"   = grepl("no played games", probe[["no_games"]]),
+      "error page rejected"           = grepl("isn't the games file", probe[["not_csv"]]))))
 )
 
 run_scenario <- function(name) {
   s <- scenarios[[name]]
-  r <- replay(s$games, s$setup)
+  r <- replay(s$games, s$setup, if (is.null(s$probe)) "NULL" else s$probe)
   checks <- if (r$status != 0 || is.null(r$state)) c("script ran to the end" = FALSE) else
     tryCatch(s$checks(r), error = function(e) setNames(FALSE, paste("checks ran:", conditionMessage(e))))
   list(name = name, checks = checks, log = r$log)
