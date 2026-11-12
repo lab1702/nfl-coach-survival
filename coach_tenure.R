@@ -395,11 +395,12 @@ message("Games re-credited from a departed coach to his successor: ",
         sum(team_games$stale), " (",
         paste(unique(team_games$team[team_games$stale]), collapse = ", "), ")")
 
-# nflverse credits one coach per game but occasionally misses a mid-season
-# change (e.g. it credits Ken Whisenhunt with all of Tennessee's 2015 games,
-# although Mike Mularkey coached the last nine as interim). For every
+# nflverse credits one coach per game but occasionally gets a mid-season
+# change wrong (e.g. it credits Ken Whisenhunt with all of Tennessee's 2015
+# games, although Mike Mularkey coached the last nine as interim). For every
 # in-season departure with a known date, games after that date are
-# re-credited to the interim coach named on Wikipedia.
+# re-credited to the interim coach named on Wikipedia. The reverse is fixed
+# further down: games up to that date already credited to the interim.
 fixes <- changes |>
   filter(in_season, !is.na(departure_date), !is.na(interim_coach)) |>
   select(team = team_code, season = last_season_coached, coach_key,
@@ -415,6 +416,26 @@ team_games <- team_games |>
   select(-coach_key, -departure_date, -interim_coach)
 
 message("Games re-credited to an interim coach: ", sum(team_games$recredited))
+
+# The same departures, the other way round: a game up to the departure date
+# that nflverse credits to the interim was still the departing coach's
+# (Bobby Petrino coached Atlanta on 10 December 2007 and resigned the next
+# day, but that game is credited to Emmitt Thomas).
+early <- changes |>
+  filter(in_season, !is.na(departure_date), !is.na(interim_coach)) |>
+  select(team = team_code, season = last_season_coached, coach_key = interim_key,
+         left_on = departure_date, departing_coach)
+team_games <- team_games |>
+  mutate(coach_key = name_key(coach)) |>
+  left_join(early, by = c("team", "season", "coach_key")) |>
+  mutate(returned = !is.na(left_on) & gameday <= left_on)
+check_credited(team_games$departing_coach[team_games$returned], "departing_coach")
+team_games <- team_games |>
+  mutate(coach = if_else(returned, as_credited_name(departing_coach), coach)) |>
+  select(-coach_key, -left_on, -departing_coach)
+
+message("Games re-credited from an interim coach back to the coach who left: ",
+        sum(team_games$returned))
 
 ## 1c. Coach-team-season summaries --------------------------------------------
 # A coach "started" a season if he coached the team's first game; a coach who
@@ -636,14 +657,17 @@ if (nrow(no_record) > 0) {
 # a row that doesn't say what it was meant to (a name, team or
 # last_season_coached that differs from the games data). It changes nothing,
 # and for a coach who is still credited with his team's latest game nothing
-# else would give it away, so it is a warning.
+# else would give it away, so it is a warning. An empty last_season_coached
+# is right only for a coach who never coached a game for the team
+# (Belichick's one-day 2000 Jets job); for anyone else it is a mistake too.
 orphans <- dep |>
   anti_join(stints |> select(team, last_season, coach_key),
             by = c("team", "last_season", "coach_key")) |>
   anti_join(stints_all |> filter(hire_season < 2000 | is.na(hire_season)) |>
               mutate(coach_key = name_key(coach)) |> select(team, last_season, coach_key),
             by = c("team", "last_season", "coach_key")) |>
-  filter(!is.na(last_season))  # Belichick's one-day 2000 Jets job: no games
+  filter(!is.na(last_season) |
+           paste(team, coach_key) %in% paste(stints_all$team, name_key(stints_all$coach)))
 if (nrow(orphans) > 0) {
   warn("coach_changes.csv: departure rows that match no coaching stint: ",
        paste0(orphans$departing_coach, " (", orphans$team, ", last season ",
@@ -703,11 +727,20 @@ if (nrow(no_birth) > 0) {
 }
 
 ## 1g. Season-level table (time-varying covariates) ----------------------------
-# GM and controlling-owner changes. A change dated Jan–Aug of year Y takes
-# effect for season Y; one dated Sep–Dec (during season Y) counts for Y + 1.
-# That way a GM fired *at the same time* as the coach can't leak into the
-# season that led to the coach's firing.
-first_season_of <- function(d) if_else(month(d) <= 8, year(d), year(d) + 1)
+# GM and controlling-owner changes. A change dated before year Y's first
+# game takes effect for season Y; one dated from then to the end of the
+# year (during season Y) counts for Y + 1. That way a GM fired *at the same
+# time* as the coach can't leak into the season that led to the coach's
+# firing. A year whose schedule isn't in the games file (before 1999, or
+# not published yet) uses 1 September, a few days before any opener.
+openers <- games_all |>
+  filter(!is.na(gameday)) |>
+  summarise(opener = min(as.Date(gameday)), .by = season)
+first_season_of <- function(d) {
+  opener <- coalesce(openers$opener[match(year(d), openers$season)],
+                     make_date(year(d), 9, 1))
+  if_else(d < opener, year(d), year(d) + 1)
+}
 front_office <- bind_rows(
   read_csv("data/research/gm_tenures.csv", show_col_types = FALSE) |>
     check_teams("gm_tenures.csv") |>

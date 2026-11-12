@@ -19,7 +19,7 @@ There are 190 permanent head-coaching stints that started in 2000–2026. 180 of
 Pro Football Reference blocks automated access, so I didn't use it. Nothing was hand-entered from memory: every research row points to its source.
 
 **Corrections applied to nflverse:**
-- Its coach column misses some mid-season changes. For example, it credits Ken Whisenhunt with all of Tennessee's 2015 games. 73 games are re-credited to the interim coach named on Wikipedia, using the departure date.
+- Its coach column misses some mid-season changes. For example, it credits Ken Whisenhunt with all of Tennessee's 2015 games. 73 games are re-credited to the interim coach named on Wikipedia, using the departure date, and 13 credited to an interim too early go back to the coach who left.
 - For 2026 it still lists Gannon (ARI), Morris (ATL) and McDermott (BUF), all fired in January 2026. Their 15 games are re-credited to LaFleur, Stefanski and Brady.
 - A few coach names are wrong: two misspellings, and two different coaches both listed as "Jim Mora". They are corrected from `data/research/coach_name_fixes.csv`.
 
@@ -73,10 +73,10 @@ The Cox model assumes each HR stays constant across tenure. `cox.zph` tests this
 
 **Baseline model:** no violation at the 5% level (global p = 0.07). Prior experience is borderline (p = 0.07). Its plotted effect drifts downward: roughly neutral in seasons 1–3, mildly protective later. Plainly put, a retread who survives the first few years may be a bit safer than a first-timer at the same stage. The evidence is weak.
 
-**Time-varying model:** one clear violation, for change in win % from last season (p = 0.005). Holding this season's win % fixed, a bigger "change" means last season was worse, so this term measures two bad years in a row. Splitting it by tenure fixes the violation (global p = 0.41):
+**Time-varying model:** one clear violation, for change in win % from last season (p = 0.005). Holding this season's win % fixed, a bigger "change" means last season was worse, so this term measures two bad years in a row. Splitting it by tenure fixes the violation (global p = 0.44):
 
 - **Seasons 1–2:** HR 0.94 (0.80–1.10). Last year doesn't matter, because last year was usually the previous coach's team.
-- **Season 3 onward:** HR 1.26 per 10 pts (1.11–1.42). A coach coming off a good year gets some slack; two bad years in a row is what ends it.
+- **Season 3 onward:** HR 1.26 per 10 pts (1.12–1.42). A coach coming off a good year gets some slack; two bad years in a row is what ends it.
 
 ## 4. Time-varying Cox model (`plots/05`)
 
@@ -85,12 +85,12 @@ The Cox model assumes each HR stays constant across tenure. `cox.zph` tests this
 | Covariate | HR | 95% CI |
 |---|---|---|
 | Win % this season, per +10 pts | **0.59** | 0.47–0.74 |
-| Change in win % vs last season, per +10 pts | **1.14** | 1.02–1.26 (see section 3) |
+| Change in win % vs last season, per +10 pts | **1.14** | 1.03–1.27 (see section 3) |
 | Made the playoffs | **0.18** | 0.07–0.51 |
 | Point differential per game, per +1 | 0.97 | 0.92–1.03 |
-| New GM or owner this season | 1.09 | 0.72–1.66 |
-| Previous NFL head coach | 1.13 | 0.77–1.65 |
-| Age at hire, per +5 years | 1.10 | 0.97–1.24 |
+| New GM or owner this season | 1.03 | 0.68–1.58 |
+| Previous NFL head coach | 1.13 | 0.77–1.66 |
+| Age at hire, per +5 years | 1.09 | 0.97–1.24 |
 
 The concordance is 0.87, so the season-by-season model predicts far better than the baseline one.
 
@@ -122,10 +122,10 @@ The baseline risk for each tenure season is calibrated so that the model's predi
 |---|---|---|---|---|---|
 | Dan Quinn | WAS | 3rd | 1-3-1 | 53% | 12% |
 | Todd Bowles | TB | 5th | 1-4 | 41% | 8% |
-| Jim Harbaugh | LAC | 3rd | 0-5 | 40% | 8% |
+| Jim Harbaugh | LAC | 3rd | 0-5 | 41% | 8% |
 | Shane Steichen | IND | 4th | 2-3 | 33% | 6% |
 | Andy Reid | KC | 14th | 4-0 | 26% | 5% |
-| Dave Canales | CAR | 3rd | 2-2 | 25% | 5% |
+| Dave Canales | CAR | 3rd | 2-2 | 26% | 5% |
 | DeMeco Ryans | HOU | 4th | 1-4 | 25% | 5% |
 | Zac Taylor | CIN | 8th | 3-2 | 24% | 4% |
 
@@ -134,7 +134,7 @@ The pattern behind the list: a coach in season 3 or later, with a losing record,
 First-year coaches with bad starts, such as Hafley (0-5), Saleh (0-5) and Mike LaFleur (1-4), rate low. Since 2000 almost nobody has been fired after one season.
 
 **Read these as model estimates, not predictions.**
-- The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries, scandals or owner temperament. That is why Andy Reid (26% "if miss" at 4-0, in his 14th season) ranks fifth, and why Dan Campbell (19%) and Nick Sirianni (17%) sit higher than anyone following the league would put them.
+- The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries, scandals or owner temperament. That is why Andy Reid (26% "if miss" at 4-0, in his 14th season) ranks fifth, and why Dan Campbell (20%) and Nick Sirianni (18%) sit higher than anyone following the league would put them.
 - Few coaches reach season 5 or later, so the baseline risk from there on is pooled across seasons and imprecise.
 - Coaching changes are entered by hand. The games data doesn't reveal a firing: nflverse kept crediting the fired coach after every mid-season firing of 2024 and 2025. A coach who has left stays on the list until his departure is in `coach_changes.csv`; the report shows the latest departure on record.
 - "If miss" is the relevant number for losing teams. For 5-0 teams the "if make" column is the realistic one.

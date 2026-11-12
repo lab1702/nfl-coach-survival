@@ -89,7 +89,7 @@ If the games data shows a coach has gone but there's no departure row (his team 
 Mistakes in the research files are warned about rather than silently used or dropped:
 
 - **A row entered twice** (a second birth date for a coach who already has one, say, when a former head coach is hired again): only the first is used.
-- **A departure row that matches no stint** (the coach's name, the team or `last_season_coached` differs from the games data): it changes nothing, so the coach still counts as in the job.
+- **A departure row that matches no stint** (the coach's name, the team or `last_season_coached` differs from the games data, or `last_season_coached` is empty): it changes nothing, so the coach still counts as in the job.
 - **A team name the script doesn't recognise:** rows with it are ignored. Use the team's full name.
 - **A `reason_category` the script doesn't recognise** (`Fired` for `fired`, say), or none: the departure is counted as a non-firing exit, or not counted at all if the cell is empty. Use one of the values already in the file.
 - **An empty `departing_was_interim`:** the row isn't counted as a departure. Enter `TRUE` or `FALSE`.

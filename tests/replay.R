@@ -68,7 +68,8 @@ games_as_of <- function(date, last_season, unscheduled = character()) {
 # What each run reports back.
 state_vars <- c("LAST_COMPLETE_SEASON", "CURRENT_SEASON", "season_in_progress",
                 "regular_season_over", "playoff_field_known", "playoff_teams",
-                "risk", "tenure", "interim_stints", "run_warnings", "through_text")
+                "risk", "tenure", "interim_stints", "coach_seasons", "run_warnings",
+                "through_text")
 
 # Run one scenario in its own directory. `games` is the games file to use;
 # `setup` may edit the copied files (it gets the directory) before the run.
@@ -216,9 +217,9 @@ scenarios <- list(
     games  = games_as_of("2026-09-14", 2026),
     setup  = \(dir) {
       # A retread's birth date entered again, a departure under a name the
-      # games data doesn't use, a GM row with a misspelled team, and three
+      # games data doesn't use, a GM row with a misspelled team, and four
       # firings with a cell wrong: reason_category capitalised, reason_category
-      # empty, departing_was_interim empty.
+      # empty, departing_was_interim empty, last_season_coached empty.
       add_rows(dir, "coach_birthdates.csv", \(rows) grep("^Mike McCarthy,", rows, value = TRUE))
       f <- file.path(dir, "data/research/coach_changes.csv")
       rows <- readLines(f)
@@ -230,6 +231,7 @@ scenarios <- list(
       edit("2026,Miami Dolphins,Mike McDaniel,",   ",Fired,fired,", ",Fired,Fired,")
       edit("2026,Atlanta Falcons,Raheem Morris,",  ",Fired,fired,", ",Fired,,")
       edit("2026,Cleveland Browns,Kevin Stefanski,", "Stefanski,FALSE,", "Stefanski,,")
+      edit("2026,Las Vegas Raiders,Pete Carroll,", "Carroll,FALSE,2025,", "Carroll,FALSE,,")
       writeLines(rows, f)
       add_rows(dir, "coach_changes.csv",
                '2026,Washington Commanders,Daniel Quinn,FALSE,2026,TRUE,2026-09-13,NA,Nobody Real,NA,Fired,fired,"x",https://example.org,NA')
@@ -240,15 +242,15 @@ scenarios <- list(
       "no stint counted twice"        = !any(duplicated(tenure[c("coach", "team", "hire_season")])),
       "McCarthy's seasons not doubled" = identical(tenure$seasons[tenure$coach == "Mike McCarthy" & tenure$team == "GB"], 13L),
       "duplicate birth date warned"   = any(grepl("coach_birthdates.csv: more than one row for Mike McCarthy", run_warnings, fixed = TRUE)),
-      "unmatched departure warned"    = any(grepl("match no coaching stint: Daniel Quinn (WAS, last season 2026)", run_warnings, fixed = TRUE)),
+      "unmatched departures warned"   = any(grepl("match no coaching stint: Pete Carroll (LV, last season NA), Daniel Quinn (WAS, last season 2026)", run_warnings, fixed = TRUE)),
       "Quinn still counts as active"  = any(tenure$coach == "Dan Quinn" & tenure$team == "WAS" & tenure$event_type == "active"),
       "unknown team warned"           = any(grepl('gm_tenures.csv: unrecognised team name "Las Vegas Raider"', run_warnings, fixed = TRUE)),
       "unknown and empty reason warned" = any(grepl('unrecognised reason_category for: Raheem Morris (ATL, last season 2025): (empty), Mike McDaniel (MIA, last season 2025): "Fired"', run_warnings, fixed = TRUE)),
       "empty interim flag warned"     = any(grepl("departing_was_interim is empty for: Kevin Stefanski (CLE, last season 2025)", run_warnings, fixed = TRUE)),
-      "their departures are missing"  = any(grepl("No departure record in data/research/coach_changes.csv for: Kevin Stefanski (CLE, last season 2025), Raheem Morris (ATL, last season 2025)", run_warnings, fixed = TRUE)),
+      "their departures are missing"  = any(grepl("No departure record in data/research/coach_changes.csv for: Kevin Stefanski (CLE, last season 2025), Pete Carroll (LV, last season 2025), Raheem Morris (ATL, last season 2025)", run_warnings, fixed = TRUE)),
       "nothing else warned"           = length(run_warnings) == 6))),
 
-  "Warnings, name fixes and the download check (14 Sep 2026)" = list(
+  "Warnings, corrections to the games data and the download check (14 Sep 2026)" = list(
     games  = games_as_of("2026-09-14", 2026),
     setup  = \(dir) {      # a warning R raises itself, early in the script
       f <- file.path(dir, "coach_tenure.R")
@@ -262,6 +264,14 @@ scenarios <- list(
       "R's own warning is recorded"   = identical(run_warnings, "NAs introduced by coercion"),
       "and written to the file"       = identical(r$warnings_file, "NAs introduced by coercion"),
       "nflverse name corrected"       = "Jerry Rosburg" %in% interim_stints$coach && !"Jay Rosburg" %in% interim_stints$coach,
+      # Petrino coached Atlanta on 10 December 2007 and resigned the next
+      # day; nflverse credits that game to his interim.
+      "interim's early game goes back" = identical(coach_seasons$g_reg[coach_seasons$coach == "Bobby Petrino"], 13L),
+      # Miami's GM change of 7 September 2010 and Seattle's sale of
+      # 3 September 2026 both came days before the season's first game.
+      "change before the opener counts that season" =
+        identical(coach_seasons$new_gm[coach_seasons$team == "MIA" & coach_seasons$season %in% 2010:2011], c(TRUE, FALSE)) &&
+        isTRUE(coach_seasons$new_owner[coach_seasons$team == "SEA" & coach_seasons$season == 2026]),
       "same file accepted"            = probe[["same"]] == "accepted",
       "file cut short rejected"       = grepl("stop earlier", probe[["cut_short"]]),
       "file with no games rejected"   = grepl("no played games", probe[["no_games"]]),
