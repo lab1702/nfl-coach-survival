@@ -2,9 +2,13 @@
 # request when a new image is published under the pinned tag (new digest,
 # security fixes included), so updates are reviewed rather than silent.
 #
-# Minor and major tag upgrades (e.g. ubuntu 26.04 -> 26.10, nginx 1.27 ->
-# 1.29) are ignored: they change R and package versions, which the pins exist
-# to control. Move to a new tag deliberately, by hand.
+# Ubuntu: minor and major tag upgrades (e.g. 26.04 -> 26.10) are ignored,
+# because they change R and package versions, which the pin exists to
+# control. Move to a new Ubuntu tag deliberately, by hand.
+#
+# nginx: minor upgrades (e.g. 1.30 -> 1.31) are allowed. They don't affect
+# the analysis, and each nginx branch stops getting images (and security
+# fixes) once it's superseded, so ignoring them would freeze the web server.
 version: 2
 updates:
   - package-ecosystem: docker          # FROM line in Dockerfile
@@ -20,4 +24,4 @@ updates:
       interval: weekly
     ignore:
       - dependency-name: "*"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+        update-types: ["version-update:semver-major"]

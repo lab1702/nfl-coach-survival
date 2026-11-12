@@ -16,7 +16,7 @@ The findings are written up in [WRITEUP.md](WRITEUP.md). Its numbers are a snaps
 
 ## Running it
 
-Requires R 4.1 or later and these packages: `survival`, `survminer`, `cmprsk`, `base64enc`, `htmltools`, and from the tidyverse `dplyr` (≥ 1.1.0), `readr` (≥ 2.0.0), `ggplot2` (≥ 3.4.0), `stringr`, `forcats`, `purrr`, `tibble` and `lubridate`. The full `tidyverse` install covers all of those. The script checks all of this before running and stops with a list of anything missing or too old; it never installs anything. Each run logs the R and package versions it used.
+Requires R 4.1 or later and these packages: `survival` (one whose `predict.coxph()` supports `reference = "zero"`), `survminer`, `cmprsk`, `base64enc`, `htmltools`, and from the tidyverse `dplyr` (≥ 1.1.0), `readr` (≥ 2.0.0), `ggplot2` (≥ 3.4.0), `stringr`, `forcats`, `purrr`, `tibble` and `lubridate`. The full `tidyverse` install covers all of those. The script checks all of this before running and stops with a list of anything missing or too old; it never installs anything. Each run logs the R and package versions it used.
 
 From the project root:
 
@@ -44,7 +44,7 @@ docker compose up -d --build
 - **Research files.** `data/research/` is mounted read-only from this folder, so edits take effect on the next run without a rebuild. Changes to `coach_tenure.R` need `docker compose up -d --build`.
 - **Volumes.** The games cache, the run log and the published page live in named volumes. `docker compose down -v` removes them.
 
-The image installs R and only the packages the script uses from Ubuntu's `r-cran-*` packages. Both base images (Ubuntu 26.04 and nginx) are pinned by digest, so a rebuild starts from the same images. Pinning also holds back their security fixes, so `.github/dependabot.yml` checks weekly and opens a pull request when a new image is published under either pinned tag. It ignores minor and major tag upgrades (such as Ubuntu 26.04 to 26.10), because those change the R and package versions; move to a new tag by hand when you choose to. Without GitHub, update by hand: pull the tags and replace the digests in `Dockerfile` and `compose.yaml`. Each run's log (`output/run_log.txt` in the `output` volume) starts with the R and package versions it used.
+The image installs R and only the packages the script uses from Ubuntu's `r-cran-*` packages. Both base images (Ubuntu 26.04 and nginx 1.30) are pinned by digest, so a rebuild starts from the same images. Pinning also holds back their security fixes, so `.github/dependabot.yml` checks weekly and opens a pull request when a new image is published under either pinned tag. For Ubuntu it ignores minor and major tag upgrades (such as 26.04 to 26.10), because those change the R and package versions; move to a new tag by hand when you choose to. For nginx it also proposes minor upgrades (such as 1.30 to 1.31), since an nginx branch stops getting security fixes once it's superseded. Without GitHub, update by hand: pull the tags and replace the digests in `Dockerfile` and `compose.yaml`. Each run's log (`output/run_log.txt` in the `output` volume) starts with the R and package versions it used.
 
 ## Outputs
 

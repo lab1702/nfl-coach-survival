@@ -35,7 +35,8 @@
 #
 # Requirements: R >= 4.1 (native pipe, \(x) lambdas, raw strings), dplyr >= 1.1.0
 # (slice_max(by =)), ggplot2 >= 3.4.0 (linewidth), readr >= 2.0.0
-# (show_col_types). Section 0 checks these before anything runs.
+# (show_col_types), and a survival whose predict.coxph() has reference = "zero".
+# Section 0 checks these before anything runs.
 #
 # Package substitutions: none were needed. Everything used is installed:
 # survival, survminer, cmprsk, base64enc, htmltools, and the tidyverse
@@ -67,6 +68,11 @@ if (length(too_old) > 0) {
   stop("These packages are older than this script needs: ",
        paste0(too_old, " (have ", sapply(too_old, \(p) format(packageVersion(p))),
               ", need >= ", min_versions[too_old], ")", collapse = ", "))
+}
+# Section 7 predicts on the uncentred scale (predict(..., reference = "zero")).
+if (!"zero" %in% eval(formals(getS3method("predict", "coxph", envir = asNamespace("survival")))$reference)) {
+  stop("The installed survival package (", format(packageVersion("survival")), ") is too old: ",
+       "predict.coxph() has no reference = \"zero\" option.")
 }
 
 suppressPackageStartupMessages({
@@ -209,6 +215,50 @@ if (CURRENT_SEASON > research_through) {
           "owner_tenures.csv for that offseason's changes too.", call. = FALSE)
 }
 
+# Names from the research file become coach names in the games data, so
+# they must be spelled the way nflverse spells them ("Herman Edwards" is
+# "Herm Edwards" there). A name whose key matches exactly one nflverse coach
+# takes that spelling; anything else is kept as written.
+credited <- tibble(coach = unique(team_games$coach)) |>
+  mutate(key = name_key(coach)) |>
+  filter(n() == 1, .by = key)          # "Jim Mora" Sr./Jr. stay as written
+as_credited_name <- function(x) {
+  coalesce(if_else(x %in% team_games$coach, x, NA_character_),
+           credited$coach[match(name_key(x), credited$key)], x)
+}
+# A re-credited name that isn't a plain name (e.g. "X (resigned); then Y")
+# would become a bogus coach, so stop rather than use it.
+check_credited <- function(x, what) {
+  bad <- unique(x[!str_detect(x, "^[\\p{L} .'-]+$")])
+  if (length(bad) > 0) {
+    stop("coach_changes.csv: ", what, " must be a single coach's name to ",
+         "re-credit games; got: ", paste0('"', bad, '"', collapse = ", "),
+         call. = FALSE)
+  }
+}
+
+# The nflverse coach column can lag an offseason change: for the 2026 season
+# it still listed three coaches fired in January 2026 (Gannon ARI, Morris
+# ATL, McDermott BUF). If a coach left in the offseason after season s, any
+# season s + 1 games still credited to him go to his named successor.
+# This runs first, so a successor who is then fired mid-season is matched
+# by the in-season fix below.
+offseason_fixes <- changes |>
+  filter(!in_season, !departing_was_interim, !is.na(incoming_coach)) |>
+  transmute(team = team_code, season = last_season_coached + 1, coach_key,
+            successor = incoming_coach)
+team_games <- team_games |>
+  mutate(coach_key = name_key(coach)) |>
+  left_join(offseason_fixes, by = c("team", "season", "coach_key")) |>
+  mutate(stale = !is.na(successor))
+check_credited(team_games$successor[team_games$stale], "incoming_coach")
+team_games <- team_games |>
+  mutate(coach = if_else(stale, as_credited_name(successor), coach)) |>
+  select(-coach_key, -successor)
+message("Games re-credited from a departed coach to his successor: ",
+        sum(team_games$stale), " (",
+        paste(unique(team_games$team[team_games$stale]), collapse = ", "), ")")
+
 # nflverse credits one coach per game but occasionally misses a mid-season
 # change (e.g. it credits Ken Whisenhunt with all of Tennessee's 2015 games,
 # although Mike Mularkey coached the last nine as interim). For every
@@ -222,29 +272,13 @@ fixes <- changes |>
 team_games <- team_games |>
   mutate(coach_key = name_key(coach)) |>
   left_join(fixes, by = c("team", "season", "coach_key")) |>
-  mutate(recredited = !is.na(departure_date) & gameday > departure_date,
-         coach = if_else(recredited, interim_coach, coach)) |>
+  mutate(recredited = !is.na(departure_date) & gameday > departure_date)
+check_credited(team_games$interim_coach[team_games$recredited], "interim_coach")
+team_games <- team_games |>
+  mutate(coach = if_else(recredited, as_credited_name(interim_coach), coach)) |>
   select(-coach_key, -departure_date, -interim_coach)
 
 message("Games re-credited to an interim coach: ", sum(team_games$recredited))
-
-# Likewise, the nflverse coach column for the 2026 season still lists three
-# coaches who were fired in January 2026 (Gannon ARI, Morris ATL,
-# McDermott BUF). If a coach left in the offseason after season s, any
-# season s + 1 games still credited to him go to his named successor.
-offseason_fixes <- changes |>
-  filter(!in_season, !departing_was_interim, !is.na(incoming_coach)) |>
-  transmute(team = team_code, season = last_season_coached + 1, coach_key,
-            successor = incoming_coach)
-team_games <- team_games |>
-  mutate(coach_key = name_key(coach)) |>
-  left_join(offseason_fixes, by = c("team", "season", "coach_key")) |>
-  mutate(stale = !is.na(successor),
-         coach = if_else(stale, successor, coach)) |>
-  select(-coach_key, -successor)
-message("Games re-credited from a departed coach to his successor: ",
-        sum(team_games$stale), " (",
-        paste(unique(team_games$team[team_games$stale]), collapse = ", "), ")")
 
 ## 1c. Coach-team-season summaries --------------------------------------------
 # A coach "started" a season if he coached the team's first game; a coach who
@@ -426,7 +460,7 @@ stints <- stints |>
       forced                        ~ "fired",
       reason_category == "resigned" ~ "resigned",
       reason_category == "retired"  ~ "retired",
-      !is.na(reason_category)       ~ "other",   # traded (Gruden 2002, Edwards 2006)
+      !is.na(reason_category)       ~ "other",   # traded (Edwards 2006; Gruden 2002 was a pre-2000 hire)
       active                        ~ "active",
       TRUE                          ~ NA_character_),
     strict_fired = reason_category == "fired")
@@ -657,7 +691,12 @@ cox_base <- coxph(Surv(seasons, status) ~ age5 + prior_hc + prev_win10,
                   data = cox_data)
 cat("\n== Cox model, baseline covariates ==\n")
 print(summary(cox_base))
-cat("(Houston 2002 is dropped: an expansion team has no previous season.)\n")
+if (length(cox_base$na.action) > 0) {
+  cat("(Dropped for a missing covariate: ",
+      paste(cox_data$team[cox_base$na.action], cox_data$hire_season[cox_base$na.action],
+            collapse = ", "),
+      ". An expansion team has no previous season.)\n", sep = "")
+}
 
 # Sensitivity: count only departures Wikipedia labels plainly "Fired"
 # (mutual partings, non-renewals and Carroll's reassignment become censored).
@@ -830,16 +869,20 @@ if (season_in_progress) {
   # Five or six games are a noisy sample, and the model was fit on full
   # seasons: plugging in a raw 0-5 would treat it like 0-17. So the inputs
   # are a *projected* full season: actual results so far, plus .500 football
-  # and an even point differential over the remaining games of 17.
-  SEASON_GAMES <- 17
+  # and an even point differential over the team's remaining games. The
+  # season's length comes from each team's regular-season schedule.
+  season_games <- tibble(team = franchise(c(cur_reg$home_team, cur_reg$away_team))) |>
+    count(team, name = "season_games")
   current <- coach_seasons |>
     filter(season == CURRENT_SEASON) |>
     semi_join(stints |> filter(active), by = "stint_id") |>   # still in the job
     left_join(stints |> select(stint_id, age_at_hire, prior_hc), by = "stint_id") |>
-    mutate(win_pct_to_date = win_pct,
-           win_pct        = (w + 0.5 * t + 0.5 * (SEASON_GAMES - g_reg)) / SEASON_GAMES,
+    left_join(season_games, by = "team") |>
+    mutate(season_games   = pmax(coalesce(season_games, g_reg), g_reg),
+           win_pct_to_date = win_pct,
+           win_pct        = (w + 0.5 * t + 0.5 * (season_games - g_reg)) / season_games,
            win_pct_change = win_pct - prev_team_win_pct,
-           pd_per_game    = (pf - pa) / SEASON_GAMES,
+           pd_per_game    = (pf - pa) / season_games,
            win10 = win_pct * 10, win_chg10 = win_pct_change * 10,
            age5 = age_at_hire / 5) |>
     split_chg() |>
@@ -927,6 +970,11 @@ long_date <- function(d) paste0(month.name[as.integer(format(d, "%m"))], " ",
 pct <- function(x, d = 0) sprintf(paste0("%.", d, "f%%"), 100 * x)
 num <- function(x, d = 2) formatC(x, format = "f", digits = d)
 pval <- function(p) ifelse(p < 0.001, "< 0.001", formatC(p, format = "f", digits = 3))
+# A hazard ratio as a change in risk: 0.6 -> "&minus;40%", 1.1 -> "+10%".
+hr_change <- function(hr) if (hr < 1) paste0("&minus;", pct(1 - hr)) else paste0("+", pct(hr - 1))
+# ... or in words: the verb ("cuts" / "raises") and the size of the change.
+hr_verb <- function(hr) if (hr < 1) "cuts" else "raises"
+hr_size <- function(hr) pct(abs(1 - hr))
 
 img <- function(path, alt, caption = NULL) {
   sprintf('<figure class="card fig"><img src="data:image/png;base64,%s" alt="%s">%s</figure>',
@@ -1033,8 +1081,8 @@ hero <- paste0(
   '<div class="scoreboard">',
   stat(km_tab[["median"]], "Median seasons until a coach is fired"),
   stat(pct(cif["Fired", "4"]), "Fired by the end of season 4"),
-  stat(paste0("&minus;", pct(1 - hr_tv["win10", "exp(coef)"])), "Firing risk per +10 pts of win %"),
-  stat(paste0("&minus;", pct(1 - hr_tv["playoffTRUE", "exp(coef)"])), "Firing risk after a playoff season"),
+  stat(hr_change(hr_tv["win10", "exp(coef)"]), "Firing risk per +10 pts of win %"),
+  stat(hr_change(hr_tv["playoffTRUE", "exp(coef)"]), "Firing risk after a playoff season"),
   "</div>",
   if (season_in_progress) '<a class="cta" href="#hot-seat">See the hot seat &rarr;</a>' else "",
   "</div></header>")
@@ -1098,8 +1146,9 @@ sec_ph <- section("ph-check", "03", "Checking proportional hazards",
           pval(zph_spl$table["GLOBAL", "p"]), flagged(zph_spl)))
 
 sec_tv <- section("season", "04", "Season by season",
-  takeaway(sprintf("Win and you stay. Each +10 pts of win %% (about 1.7 wins) cuts that season&rsquo;s firing risk by %s; a playoff trip cuts it by %s. Only %d of %d firings came right after a playoff season.",
-                   pct(1 - hr_tv["win10", "exp(coef)"]), pct(1 - hr_tv["playoffTRUE", "exp(coef)"]),
+  takeaway(sprintf("Win and you stay. Each +10 pts of win %% (about 1.7 wins) %s that season&rsquo;s firing risk by %s; a playoff trip %s it by %s. Only %d of %d firings came right after a playoff season.",
+                   hr_verb(hr_tv["win10", "exp(coef)"]), hr_size(hr_tv["win10", "exp(coef)"]),
+                   hr_verb(hr_tv["playoffTRUE", "exp(coef)"]), hr_size(hr_tv["playoffTRUE", "exp(coef)"]),
                    n_fired_after_playoffs, n_fired)),
   sprintf("<p>Time-varying Cox model on %d coach-seasons and %d firings, using only what was known when each decision was made. Standard errors clustered by stint. Concordance %s.</p>",
           cox_tv$n, cox_tv$nevent, num(cox_tv$concordance[["concordance"]])),
@@ -1157,14 +1206,16 @@ if (season_in_progress) {
     '<th class="num">', win_head, '</th>', last_head,
     "</tr></thead><tbody>", paste(board_rows, collapse = ""), "</tbody></table></div>")
 
-  # Teams whose latest-game coach has no rating, and why.
+  # Teams whose latest-game coach has no rating, and why. A team that hasn't
+  # played yet is listed without a name: its latest-game coach is last
+  # season's, who may have left since.
   unrated <- current_coaches |>
     anti_join(risk, by = c("team", "coach")) |>
     mutate(why = if_else(latest < CURRENT_SEASON, "no game yet this season",
-                         "interim coach, or already left"))
+                         paste0(esc(coach), ": interim coach, or already left")))
   unrated_note <- if (nrow(unrated) == 0) "" else sprintf(
     '<p class="small">Not rated: %s. Coaches without a model row this season (and those whose predecessor left without a departure record yet) aren&rsquo;t rated.</p>',
-    paste0(esc(unrated$team), " (", esc(unrated$coach), ": ", unrated$why, ")", collapse = ", "))
+    paste0(esc(unrated$team), " (", unrated$why, ")", collapse = ", "))
 
   intro <- if (playoff_field_known) {
     sprintf("<p>The %d regular season is over, so each estimate uses the team&rsquo;s final record and its actual playoff result.</p>",

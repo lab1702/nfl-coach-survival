@@ -25,7 +25,7 @@ Pro Football Reference blocks automated access, so I didn't use it. Nothing was 
 **Definitions:**
 - **Seasons coached:** seasons in which the coach coached at least one game for the team. A mid-season firing counts that season.
 - **Fired (`status = 1`):** the club ended the job. This includes 5 "mutual partings", 6 contracts the club didn't renew (e.g. Garrett, McCarthy) and Carroll's 2024 reassignment. Treating these as censored instead barely moves the estimates (see the sensitivity check in section 3 of the script).
-- **Resigned, retired or traded:** censored for the main models. The 2 trades are Gruden in 2002 and Herm Edwards in 2006.
+- **Resigned, retired or traded:** censored for the main models. The one trade in the sample is Herm Edwards in 2006 (Gruden's 2002 trade ended a stint that began in 1998, before the sample).
 - **Interim coaches:** the 42 interim-only stints are in `data/interim_stints.csv` and are excluded from the models. An interim later made permanent (e.g. Jason Garrett) starts his tenure with his first full season.
 - **Previous NFL head coach:** held a permanent NFL head-coaching job before this hire (63 of 190 stints). Interim-only experience is flagged separately.
 - **New GM or owner:** the change took effect before that season's opener. A change made during season *s* counts for *s + 1*, so a GM fired alongside the coach can't leak into the season that got the coach fired.

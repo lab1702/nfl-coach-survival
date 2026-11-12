@@ -29,8 +29,10 @@ trap on_term TERM INT
 
 run_bg() { "$@" & child=$!; wait "$child"; local rc=$?; child=0; return "$rc"; }
 
-if ! date -d "today $REFRESH_TIME" > /dev/null 2>&1; then
-  echo "REFRESH_TIME must look like HH:MM (got '$REFRESH_TIME')" >&2
+# Strictly HH:MM: `date -d` alone would accept things like "+1 hour", which
+# is always an hour away and would turn the daily run into an hourly one.
+if ! [[ "$REFRESH_TIME" =~ ^([01]?[0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+  echo "REFRESH_TIME must be HH:MM, 00:00 to 23:59 (got '$REFRESH_TIME')" >&2
   exit 1
 fi
 if ! [[ "$RETRY_MINUTES" =~ ^[0-9]+$ && "$MAX_RETRIES" =~ ^[0-9]+$ ]]; then
@@ -74,8 +76,14 @@ while true; do
   failed=0; refresh || failed=1
 
   now=$(date +%s)
-  next=$(date -d "today $REFRESH_TIME" +%s)
-  (( next > now )) || next=$(date -d "tomorrow $REFRESH_TIME" +%s)
+  next=$(date -d "today $REFRESH_TIME" +%s 2>/dev/null) || next=0
+  (( next > now )) || next=$(date -d "tomorrow $REFRESH_TIME" +%s 2>/dev/null) || next=0
+  # If date can't place the time (e.g. one that a DST change skips), wait a
+  # day rather than sleeping a negative time and re-running at once.
+  if ! [[ "$next" =~ ^[0-9]+$ ]] || (( next <= now )); then
+    log "Couldn't work out the next $REFRESH_TIME; waiting 24 hours"
+    next=$(( now + 24 * 3600 ))
+  fi
   retry=$(( now + RETRY_MINUTES * 60 ))
   if (( failed && retries < MAX_RETRIES && retry < next )); then
     retries=$(( retries + 1 ))

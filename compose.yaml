@@ -29,8 +29,9 @@ services:
       - site:/site
 
   web:
-    # Pinned by digest for reproducible deployments (nginx:1.27-alpine).
-    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    # Pinned by digest for reproducible deployments (nginx:1.30-alpine, the
+    # stable branch). Dependabot proposes new digests and minor versions.
+    image: nginx:1.30-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
     restart: unless-stopped
     ports:
       - "${PORT:-8080}:80"
