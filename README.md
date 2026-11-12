@@ -24,7 +24,7 @@ From the project root:
 Rscript coach_tenure.R
 ```
 
-It takes about 30 seconds. On first run, and whenever the cached copy is more than a day old, it downloads the nflverse games file into `data/raw/`. A download never replaces the cached copy if it fails, isn't the games file, or holds fewer games or results than the copy already there (a file cut short); the run carries on with the cached copy and warns.
+It takes about 30 seconds. On first run, and whenever the cached copy is more than a day old, it downloads the nflverse games file into `data/raw/`. A download never replaces the cached copy if it fails, isn't the games file, or looks cut short next to the copy already there (its results stop earlier, or it has over 5% fewer games); the run carries on with the cached copy and warns.
 
 It runs at any time of year. The season settings come from the data: the last complete season is the latest one whose Super Bowl has been played, and the next season counts as in progress once it has results. The hot-seat ratings only appear while a season is in progress; in the offseason the report says when they'll return. Until the playoff field is set, each coach gets two numbers (if his team misses or makes the playoffs). Once the regular season is over and the wild-card games are scheduled, the estimate uses the team's actual playoff result. Teams with first-round byes don't appear in the schedule until the divisional round. Until then, an outright division leader who isn't playing a wild-card game counts as having a bye, since every division winner qualifies. Divisions are read from the schedule's division games, so a realignment is picked up automatically; if those games don't form consistent divisions, the bye inference is skipped. If that doesn't account for all the byes in the previous season's format (a division decided on tiebreakers, or a new format), the status waits until the divisional round is scheduled. In a season's opening days, teams that haven't played yet are listed as not rated.
 
@@ -91,6 +91,7 @@ Mistakes in the research files are warned about rather than silently used or dro
 - **A row entered twice** (a second birth date for a coach who already has one, say, when a former head coach is hired again): only the first is used.
 - **A departure row that matches no stint** (the coach's name, the team or `last_season_coached` differs from the games data): it changes nothing, so the coach still counts as in the job.
 - **A team name the script doesn't recognise:** rows with it are ignored. Use the team's full name.
+- **A `reason_category` the script doesn't recognise** (`Fired` for `fired`, say): the departure is counted as a non-firing exit. Use one of the values already in the file.
 
 If nflverse misspells a coach's name or lists two coaches under one name, add a row to `coach_name_fixes.csv`: the name as nflverse has it, the team code if the fix applies to one team only (such as `IND`; for a relocated team, its current code; otherwise `NA`), and the correct name.
 

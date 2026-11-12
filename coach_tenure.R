@@ -213,7 +213,9 @@ games_summary <- function(path) {
 }
 # Why a download must not replace the cache (NULL if it may). A proxy error
 # page fails the first test; a file cut short, or published half-written,
-# fails the others: the real file only ever gains games and results.
+# fails the others: the real file's results never go backwards. Its game
+# count can drop slightly (a cancelled game is removed, as in 2022), so
+# only a drop of more than 5% counts as cut short.
 download_problem <- function(path) {
   new <- games_summary(path)
   if (is.null(new)) return("it isn't the games file")
@@ -292,6 +294,22 @@ changes <- read_csv("data/research/coach_changes.csv", show_col_types = FALSE) |
          interim_key = name_key(interim_coach),
          departure_date = as.Date(departure_date)) |>
   first_per_key(c("team_code", "last_season_coached", "coach_key"), "coach_changes.csv")
+
+# reason_category decides whether a departure counts as a firing (section
+# 1e), and any value that section doesn't know is a non-firing exit. A typo
+# ("Fired", "fire") would turn a firing into one without a word, so name it.
+reason_categories <- c("fired", "mutual", "contract_expired", "resigned", "retired",
+                       "traded", "other", "interim_not_retained")
+bad_reason <- changes |>
+  filter(!is.na(reason_category), !reason_category %in% reason_categories)
+if (nrow(bad_reason) > 0) {
+  warn("coach_changes.csv: unrecognised reason_category for: ",
+       paste0(bad_reason$departing_coach, " (", bad_reason$team_code, ", last season ",
+              bad_reason$last_season_coached, '): "', bad_reason$reason_category, '"',
+              collapse = ", "),
+       ". These departures are counted as non-firing exits; use one of: ",
+       paste(reason_categories, collapse = ", "), ".")
+}
 
 # How far the coaching research goes. The GM and owner files can't be
 # checked this way (a team with no change leaves no row), so the warning
@@ -1428,7 +1446,7 @@ if (season_in_progress) {
     mutate(why = case_when(
       latest < CURRENT_SEASON ~ "no game yet this season",
       paste(team, coach) %in% paste(missing_inputs$team, missing_inputs$coach) ~
-        paste0(esc(coach), ": missing research data, see the run log"),
+        paste0(esc(coach), ": missing research data, see the run&rsquo;s warnings"),
       TRUE ~ paste0(esc(coach), ": interim coach, or already left")))
   unrated_note <- if (nrow(unrated) == 0) "" else sprintf(
     '<p class="small">Not rated: %s. Coaches without a model row this season (and those whose predecessor left without a departure record yet) aren&rsquo;t rated.</p>',

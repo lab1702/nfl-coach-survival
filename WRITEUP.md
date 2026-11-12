@@ -1,6 +1,6 @@
 # How long do NFL head coaches last? A survival analysis of hires since 2000
 
-Run it with `Rscript coach_tenure.R`. It takes about 30 seconds. The full console output is saved in `output/run_log.txt`.
+Run it with `Rscript coach_tenure.R`. It takes about 30 seconds. Any warnings that need attention are saved in `output/run_warnings.txt`.
 
 The script also writes `output/coach_tenure_report.html`, a single self-contained page (about 1 MB) with every plot embedded and no external files. Copy it to any web server as-is. Its numbers are computed on each run, so it stays current when the data updates; the tables below are a snapshot from the run through week 6 of 2026.
 
@@ -114,7 +114,7 @@ Firing is by far the dominant exit, roughly 8 to 1. Voluntary exits are rare and
 
 ## Current coaches: highest model-estimated risk of being fired after 2026 (`plots/07`, `output/current_coach_risk_2026.csv`)
 
-The 2026 season is through week 6. Six games are a noisy sample, and the model was fit on full seasons, so each team's season is projected: actual results so far, plus .500 football and an even point differential the rest of the way. Playoffs aren't decided, so each coach gets two numbers: one if his team misses, one if it makes it. These come from the split model in section 3.
+The 2026 season is one game into week 6, and most teams have played five games. That's a noisy sample, and the model was fit on full seasons, so each team's season is projected: actual results so far, plus .500 football and an even point differential the rest of the way. Playoffs aren't decided, so each coach gets two numbers: one if his team misses, one if it makes it. These come from the split model in section 3.
 
 The baseline risk for each tenure season is calibrated so that the model's predicted firings add up to the firings observed in that season. Seasons 1–4 each get their own baseline. Seasons 5 and later share one, because few coaches get that far and the per-season counts jump around (7, 11 and 3 firings in seasons 5, 6 and 7).
 
