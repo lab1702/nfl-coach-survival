@@ -131,7 +131,7 @@ The pattern behind the list: a coach in season 3 or later, with a losing record,
 First-year coaches with bad starts, such as Hafley (0-5), Saleh (0-5) and Mike LaFleur (1-4), rate low. Since 2000 almost nobody has been fired after one season.
 
 **Read these as model estimates, not predictions.**
-- The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries, scandals or owner temperament. That is why Campbell, Sirianni and Andy Reid (20% "if miss", 14th season) show up higher than anyone following the league would put them.
+- The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries, scandals or owner temperament. That is why Campbell, Sirianni and Andy Reid (22% "if miss", 14th season) show up higher than anyone following the league would put them.
 - Few coaches reach season 8 or later, so the baseline risk for long tenures is pooled and imprecise.
 - "If miss" is the relevant number for losing teams. For 5-0 teams the "if make" column is the realistic one.
 

@@ -75,7 +75,7 @@ Every research row carries its source URL. The research files are current as of 
 
 The season rolls forward on its own. What needs updating by hand is the research:
 
-Add each offseason's head-coach departures to `coach_changes.csv` (with `article_season` set to the new season), and any GM or owner changes to their files. The script reads how far the coaching research goes from the latest `article_season` and warns when the data has moved past it. It can't tell whether the GM and owner files are current, because a team with no change leaves no row, so check those by hand.
+Add each offseason's head-coach departures to `coach_changes.csv` (with `article_season` set to the new season), and any GM or owner changes to their files. Each new hire also needs a birth date in `coach_birthdates.csv` (and, in the unlikely case he was an NFL head coach before 1999, a row in `prior_hc_pre1999.csv`). A hire without a birth date is left out of the models that use age and isn't rated on the hot seat; the script warns about it. The script reads how far the coaching research goes from the latest `article_season` and warns when the data has moved past it. It can't tell whether the GM and owner files are current, because a team with no change leaves no row, so check those by hand.
 
 Departures matter most. A coach fired after the season is still credited with his team's last game, so until his row is in `coach_changes.csv` he counts as still in the job. Once it's there he drops off the hot seat; the record always wins over the game data.
 

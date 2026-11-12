@@ -156,7 +156,7 @@ if (stale) {
   # Accept the download only if it looks like the games file (its header has
   # the columns this script uses); a proxy error page must not replace the
   # cache. read_csv copes with a byte-order mark or quoted column names.
-  needed_cols <- c("season", "game_type", "gameday", "week", "home_team", "away_team",
+  needed_cols <- c("game_id", "season", "game_type", "gameday", "week", "home_team", "away_team",
                    "home_score", "away_score", "home_coach", "away_coach")
   header <- if (ok) tryCatch(names(read_csv(tmp, n_max = 0, show_col_types = FALSE)),
                              error = function(e) character()) else character()
@@ -211,7 +211,8 @@ research_through <- max(changes$article_season)
 if (CURRENT_SEASON > research_through) {
   warning("coach_changes.csv covers departures through the ", research_through,
           " offseason, but the data has reached ", CURRENT_SEASON, ". Add the ",
-          CURRENT_SEASON, " offseason's departures, and check gm_tenures.csv and ",
+          CURRENT_SEASON, " offseason's departures, add each new hire's birth date ",
+          "to coach_birthdates.csv, and check gm_tenures.csv and ",
           "owner_tenures.csv for that offseason's changes too.", call. = FALSE)
 }
 
@@ -537,6 +538,18 @@ stints <- stints |>
                                levels = c("First-time NFL head coach",
                                           "Previous NFL head coach")))
 
+# A new hire needs a row in coach_birthdates.csv. Without one his age is
+# unknown: his stint drops out of the models that use age, and he gets no
+# hot-seat rating (section 7 lists his team as not rated).
+no_birth <- stints |> filter(is.na(birth_date))
+if (nrow(no_birth) > 0) {
+  warning("No birth date in data/research/coach_birthdates.csv for: ",
+          paste0(no_birth$coach, " (", no_birth$team, ", hired ", no_birth$hire_season, ")",
+                 collapse = ", "),
+          ". These stints are left out of the models that use age at hire, and ",
+          "get no hot-seat rating.", call. = FALSE)
+}
+
 ## 1g. Season-level table (time-varying covariates) ----------------------------
 # GM and controlling-owner changes. A change dated Jan–Aug of year Y takes
 # effect for season Y; one dated Sep–Dec (during season Y) counts for Y + 1.
@@ -692,10 +705,14 @@ cox_base <- coxph(Surv(seasons, status) ~ age5 + prior_hc + prev_win10,
 cat("\n== Cox model, baseline covariates ==\n")
 print(summary(cox_base))
 if (length(cox_base$na.action) > 0) {
+  dropped <- cox_data[cox_base$na.action, ]
+  why <- case_when(
+    is.na(dropped$age_at_hire) & is.na(dropped$prev_win_pct) ~ "no birth date or previous season",
+    is.na(dropped$age_at_hire) ~ "no birth date",
+    TRUE ~ "expansion team, no previous season")
   cat("(Dropped for a missing covariate: ",
-      paste(cox_data$team[cox_base$na.action], cox_data$hire_season[cox_base$na.action],
-            collapse = ", "),
-      ". An expansion team has no previous season.)\n", sep = "")
+      paste0(dropped$team, " ", dropped$hire_season, " (", why, ")", collapse = ", "),
+      ".)\n", sep = "")
 }
 
 # Sensitivity: count only departures Wikipedia labels plainly "Fired"
@@ -853,7 +870,7 @@ ggsave("plots/06_competing_risks.png", p_ci, width = 9, height = 5.5, dpi = 150)
 #
 # P(fired after season k) = 1 − exp(−ΔH0(k) · exp(x'b)), where ΔH0(k) is the
 # Cox baseline hazard for tenure season k. Few coaches reach long tenures, so
-# ΔH0 is pooled (averaged) for seasons 8 and later. We use the split model
+# seasons 8 and later share one pooled ΔH0. We use the split model
 # from section 5, since it satisfies the proportional-hazards assumption.
 
 if (season_in_progress) {
@@ -863,7 +880,14 @@ if (season_in_progress) {
     select(k, dH0)
   bh <- tibble(k = 1:40) |> left_join(bh, by = "k") |>
     mutate(dH0 = coalesce(dH0, 0))
-  tail_rate <- mean(bh$dH0[bh$k >= 8 & bh$k <= max(tv_data$tstop)])
+  # Pooled rate for seasons 8+: all firings in those seasons over the summed
+  # risk weights exp(x'b) of every coach-season at risk in them (the Breslow
+  # estimate with one shared hazard). An unweighted mean of the per-season
+  # increments would count season 20 (one coach at risk) as much as season 8.
+  y_fit     <- cox_tv_split$y                       # rows used in the fit
+  lp_fit    <- predict(cox_tv_split, type = "lp", reference = "zero")
+  in_tail   <- y_fit[, "stop"] >= 8
+  tail_rate <- sum(y_fit[in_tail, "status"]) / sum(exp(lp_fit[in_tail]))
   bh <- bh |> mutate(dH0 = if_else(k >= 8, tail_rate, dH0))
 
   # Five or six games are a noisy sample, and the model was fit on full
@@ -897,12 +921,23 @@ if (season_in_progress) {
   # Until the playoffs start, show both scenarios. After that, playoff
   # qualification is known, so p_fired uses the team's actual result and
   # drives the ranking; the scenario columns are kept for reference.
+  # A coach with a missing input (no birth date yet, or an expansion team
+  # with no previous season) can't be rated. He's left out of the ranking
+  # and listed as not rated, rather than breaking the plot and the board.
   risk <- current |>
     mutate(record = paste0(w, "-", l, if_else(t > 0, paste0("-", t), "")),
            made_playoffs      = if (playoff_field_known) team %in% playoff_teams else NA,
            p_fired_if_miss    = risk_for(current, FALSE),
            p_fired_if_playoff = risk_for(current, TRUE),
-           p_fired = if_else(made_playoffs, p_fired_if_playoff, p_fired_if_miss)) |>
+           p_fired = if_else(made_playoffs, p_fired_if_playoff, p_fired_if_miss))
+  missing_inputs <- risk |> filter(is.na(p_fired_if_miss)) |> select(team, coach)
+  if (nrow(missing_inputs) > 0) {
+    warning("No hot-seat rating (a model input is missing) for: ",
+            paste0(missing_inputs$coach, " (", missing_inputs$team, ")", collapse = ", "),
+            call. = FALSE)
+  }
+  risk <- risk |>
+    filter(!is.na(p_fired_if_miss)) |>
     arrange(desc(coalesce(p_fired, p_fired_if_miss))) |>
     transmute(coach, team, season_number = tenure_season, record,
               games_played = g_reg,
@@ -1211,8 +1246,11 @@ if (season_in_progress) {
   # season's, who may have left since.
   unrated <- current_coaches |>
     anti_join(risk, by = c("team", "coach")) |>
-    mutate(why = if_else(latest < CURRENT_SEASON, "no game yet this season",
-                         paste0(esc(coach), ": interim coach, or already left")))
+    mutate(why = case_when(
+      latest < CURRENT_SEASON ~ "no game yet this season",
+      paste(team, coach) %in% paste(missing_inputs$team, missing_inputs$coach) ~
+        paste0(esc(coach), ": missing research data, see the run log"),
+      TRUE ~ paste0(esc(coach), ": interim coach, or already left")))
   unrated_note <- if (nrow(unrated) == 0) "" else sprintf(
     '<p class="small">Not rated: %s. Coaches without a model row this season (and those whose predecessor left without a departure record yet) aren&rsquo;t rated.</p>',
     paste0(esc(unrated$team), " (", unrated$why, ")", collapse = ", "))
