@@ -16,7 +16,7 @@ The findings are written up in [WRITEUP.md](WRITEUP.md). Its numbers are a snaps
 
 ## Running it
 
-Requires R 4.1 or later and these packages: `survival` (one whose `predict.coxph()` supports `reference = "zero"`), `survminer`, `cmprsk`, `base64enc`, `htmltools`, and from the tidyverse `dplyr` (≥ 1.1.0), `readr` (≥ 2.0.0), `ggplot2` (≥ 3.4.0), `stringr`, `forcats`, `purrr`, `tibble` and `lubridate`. The full `tidyverse` install covers all of those. The script checks all of this before running and stops with a list of anything missing or too old; it never installs anything. Each run logs the R and package versions it used.
+Requires R 4.1 or later and these packages: `survival` (≥ 3.5.0), `survminer`, `cmprsk`, `base64enc`, `htmltools`, and from the tidyverse `dplyr` (≥ 1.1.0), `readr` (≥ 2.0.0), `ggplot2` (≥ 3.4.0), `stringr`, `forcats`, `purrr`, `tibble` and `lubridate`. The full `tidyverse` install covers all of those. The script checks all of this before running and stops with a list of anything missing or too old; it never installs anything. Each run logs the R and package versions it used.
 
 From the project root:
 
@@ -91,7 +91,8 @@ Mistakes in the research files are warned about rather than silently used or dro
 - **A row entered twice** (a second birth date for a coach who already has one, say, when a former head coach is hired again): only the first is used.
 - **A departure row that matches no stint** (the coach's name, the team or `last_season_coached` differs from the games data): it changes nothing, so the coach still counts as in the job.
 - **A team name the script doesn't recognise:** rows with it are ignored. Use the team's full name.
-- **A `reason_category` the script doesn't recognise** (`Fired` for `fired`, say): the departure is counted as a non-firing exit. Use one of the values already in the file.
+- **A `reason_category` the script doesn't recognise** (`Fired` for `fired`, say), or none: the departure is counted as a non-firing exit, or not counted at all if the cell is empty. Use one of the values already in the file.
+- **An empty `departing_was_interim`:** the row isn't counted as a departure. Enter `TRUE` or `FALSE`.
 
 If nflverse misspells a coach's name or lists two coaches under one name, add a row to `coach_name_fixes.csv`: the name as nflverse has it, the team code if the fix applies to one team only (such as `IND`; for a relocated team, its current code; otherwise `NA`), and the correct name.
 

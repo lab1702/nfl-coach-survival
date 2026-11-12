@@ -17,9 +17,10 @@
 # nothing is downloaded.
 #
 # The last scenarios replay the script with mistakes planted in the research
-# files (a duplicated row, a mistyped departure, an unknown team or reason)
-# and check that each is warned about, that warnings raised by R itself are
-# recorded, and that a bad download would not replace the cached games file.
+# files (a duplicated row, a mistyped departure, an unknown team or reason,
+# an empty cell) and check that each is warned about, that warnings raised
+# by R itself are recorded, and that a bad download would not replace the
+# cached games file.
 #
 # It needs data/raw/games.csv (run coach_tenure.R once first) covering the
 # 2025 season and September 2026; any later copy works, because every
@@ -215,14 +216,20 @@ scenarios <- list(
     games  = games_as_of("2026-09-14", 2026),
     setup  = \(dir) {
       # A retread's birth date entered again, a departure under a name the
-      # games data doesn't use, a GM row with a misspelled team, and a
-      # firing whose reason_category is capitalised.
+      # games data doesn't use, a GM row with a misspelled team, and three
+      # firings with a cell wrong: reason_category capitalised, reason_category
+      # empty, departing_was_interim empty.
       add_rows(dir, "coach_birthdates.csv", \(rows) grep("^Mike McCarthy,", rows, value = TRUE))
       f <- file.path(dir, "data/research/coach_changes.csv")
       rows <- readLines(f)
-      at <- grep("^2026,Miami Dolphins,Mike McDaniel,", rows)
-      stopifnot(length(at) == 1, grepl(",Fired,fired,", rows[at], fixed = TRUE))
-      rows[at] <- sub(",Fired,fired,", ",Fired,Fired,", rows[at], fixed = TRUE)
+      edit <- function(start, old, new) {
+        at <- grep(start, rows, fixed = TRUE)
+        stopifnot(length(at) == 1, grepl(old, rows[at], fixed = TRUE))
+        rows[at] <<- sub(old, new, rows[at], fixed = TRUE)
+      }
+      edit("2026,Miami Dolphins,Mike McDaniel,",   ",Fired,fired,", ",Fired,Fired,")
+      edit("2026,Atlanta Falcons,Raheem Morris,",  ",Fired,fired,", ",Fired,,")
+      edit("2026,Cleveland Browns,Kevin Stefanski,", "Stefanski,FALSE,", "Stefanski,,")
       writeLines(rows, f)
       add_rows(dir, "coach_changes.csv",
                '2026,Washington Commanders,Daniel Quinn,FALSE,2026,TRUE,2026-09-13,NA,Nobody Real,NA,Fired,fired,"x",https://example.org,NA')
@@ -236,8 +243,10 @@ scenarios <- list(
       "unmatched departure warned"    = any(grepl("match no coaching stint: Daniel Quinn (WAS, last season 2026)", run_warnings, fixed = TRUE)),
       "Quinn still counts as active"  = any(tenure$coach == "Dan Quinn" & tenure$team == "WAS" & tenure$event_type == "active"),
       "unknown team warned"           = any(grepl('gm_tenures.csv: unrecognised team name "Las Vegas Raider"', run_warnings, fixed = TRUE)),
-      "unknown reason warned"         = any(grepl('unrecognised reason_category for: Mike McDaniel (MIA, last season 2025): "Fired"', run_warnings, fixed = TRUE)),
-      "nothing else warned"           = length(run_warnings) == 4))),
+      "unknown and empty reason warned" = any(grepl('unrecognised reason_category for: Raheem Morris (ATL, last season 2025): (empty), Mike McDaniel (MIA, last season 2025): "Fired"', run_warnings, fixed = TRUE)),
+      "empty interim flag warned"     = any(grepl("departing_was_interim is empty for: Kevin Stefanski (CLE, last season 2025)", run_warnings, fixed = TRUE)),
+      "their departures are missing"  = any(grepl("No departure record in data/research/coach_changes.csv for: Kevin Stefanski (CLE, last season 2025), Raheem Morris (ATL, last season 2025)", run_warnings, fixed = TRUE)),
+      "nothing else warned"           = length(run_warnings) == 6))),
 
   "Warnings, name fixes and the download check (14 Sep 2026)" = list(
     games  = games_as_of("2026-09-14", 2026),

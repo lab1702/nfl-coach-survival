@@ -37,8 +37,9 @@
 #
 # Requirements: R >= 4.1 (native pipe, \(x) lambdas, raw strings), dplyr >= 1.1.0
 # (slice_max(by =)), ggplot2 >= 3.4.0 (linewidth), readr >= 2.0.0
-# (show_col_types), and a survival whose predict.coxph() has reference = "zero".
-# Section 0 checks these before anything runs.
+# (show_col_types), and survival >= 3.5.0 (predict.coxph() honours
+# reference = "zero" for the fitted rows). Section 0 checks these before
+# anything runs.
 #
 # Package substitutions: none were needed. Everything used is installed:
 # survival, survminer, cmprsk, base64enc, htmltools, and the tidyverse
@@ -62,19 +63,18 @@ if (length(missing_pkgs) > 0) {
   stop("These packages are not installed (and this script will not install ",
        "them): ", paste(missing_pkgs, collapse = ", "))
 }
-# Minimum versions for features the script relies on.
-min_versions <- c(dplyr = "1.1.0", ggplot2 = "3.4.0", readr = "2.0.0")
+# Minimum versions for features the script relies on. Section 7 predicts
+# on the uncentred scale (predict(..., reference = "zero")), for the fitted
+# rows and for new data. Before survival 3.5.0 the first of those ignored
+# the option and returned centred values, which would put every hot-seat
+# probability off by a constant factor without an error.
+min_versions <- c(dplyr = "1.1.0", ggplot2 = "3.4.0", readr = "2.0.0", survival = "3.5.0")
 too_old <- names(min_versions)[mapply(\(pkg, v) packageVersion(pkg) < v,
                                        names(min_versions), min_versions)]
 if (length(too_old) > 0) {
   stop("These packages are older than this script needs: ",
        paste0(too_old, " (have ", sapply(too_old, \(p) format(packageVersion(p))),
               ", need >= ", min_versions[too_old], ")", collapse = ", "))
-}
-# Section 7 predicts on the uncentred scale (predict(..., reference = "zero")).
-if (!"zero" %in% eval(formals(getS3method("predict", "coxph", envir = asNamespace("survival")))$reference)) {
-  stop("The installed survival package (", format(packageVersion("survival")), ") is too old: ",
-       "predict.coxph() has no reference = \"zero\" option.")
 }
 
 suppressPackageStartupMessages({
@@ -295,19 +295,33 @@ changes <- read_csv("data/research/coach_changes.csv", show_col_types = FALSE) |
          departure_date = as.Date(departure_date)) |>
   first_per_key(c("team_code", "last_season_coached", "coach_key"), "coach_changes.csv")
 
-# reason_category decides whether a departure counts as a firing (section
-# 1e), and any value that section doesn't know is a non-firing exit. A typo
-# ("Fired", "fire") would turn a firing into one without a word, so name it.
+# Two columns decide how a row counts in section 1e. departing_was_interim
+# says whether it is a permanent coach's departure at all; a row where it is
+# empty isn't counted as one. For a permanent coach, reason_category says
+# whether he was fired: a value that section doesn't know is a non-firing
+# exit, and a row with none isn't counted as a departure. A typo ("Fired",
+# "fire") or an empty cell would change a firing without a word, so name it.
 reason_categories <- c("fired", "mutual", "contract_expired", "resigned", "retired",
-                       "traded", "other", "interim_not_retained")
+                       "traded", "other")
+row_label <- function(df) {
+  paste0(df$departing_coach, " (", df$team_code, ", last season ", df$last_season_coached, ")")
+}
+no_flag <- changes |> filter(is.na(departing_was_interim))
+if (nrow(no_flag) > 0) {
+  warn("coach_changes.csv: departing_was_interim is empty for: ",
+       paste(row_label(no_flag), collapse = ", "),
+       ". These rows aren't counted as departures; enter TRUE or FALSE.")
+}
 bad_reason <- changes |>
-  filter(!is.na(reason_category), !reason_category %in% reason_categories)
+  filter(!departing_was_interim, !reason_category %in% reason_categories)
 if (nrow(bad_reason) > 0) {
   warn("coach_changes.csv: unrecognised reason_category for: ",
-       paste0(bad_reason$departing_coach, " (", bad_reason$team_code, ", last season ",
-              bad_reason$last_season_coached, '): "', bad_reason$reason_category, '"',
+       paste0(row_label(bad_reason), ": ",
+              if_else(is.na(bad_reason$reason_category), "(empty)",
+                      paste0('"', bad_reason$reason_category, '"')),
               collapse = ", "),
-       ". These departures are counted as non-firing exits; use one of: ",
+       ". An unrecognised reason is counted as a non-firing exit, and a row ",
+       "with none isn't counted as a departure; use one of: ",
        paste(reason_categories, collapse = ", "), ".")
 }
 
