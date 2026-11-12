@@ -3,6 +3,8 @@
 # TZ). A successful run replaces /site/index.html atomically; a failed run
 # leaves the previous report in place and is retried every RETRY_MINUTES,
 # up to MAX_RETRIES times, before falling back to the daily schedule.
+# Warnings from a successful run (stale research files, a failed download,
+# ...) are copied into this log, so `docker compose logs refresh` shows them.
 #
 # Errors are handled explicitly (no `set -e`): a failed run or publish must
 # never kill the scheduler, or the container's restart policy would turn it
@@ -13,7 +15,7 @@ SITE=/site
 REFRESH_TIME="${REFRESH_TIME:-10:00}"
 RETRY_MINUTES="${RETRY_MINUTES:-60}"
 MAX_RETRIES="${MAX_RETRIES:-6}"
-cd /app
+cd /app || exit 1
 
 log() { echo "[$(date -Is)] $*"; }
 
@@ -47,10 +49,21 @@ if (( RETRY_MINUTES < 1 )); then
   exit 1
 fi
 
-# Something to serve before the first run finishes.
-if [[ ! -f "$SITE/index.html" ]]; then
-  cp docker/placeholder.html "$SITE/index.html" || log "Couldn't write the placeholder page"
-fi
+# Something to serve until the first report exists: placeholder.html while
+# a run is under way, failed.html once one has failed. Both carry the marker
+# below, and only a missing page or one with the marker is ever replaced, so
+# a published report is never overwritten by a placeholder.
+PLACEHOLDER_MARK='name="coach-tenure-placeholder"'
+show_placeholder() {
+  if [[ -f "$SITE/index.html" ]] && ! grep -q "$PLACEHOLDER_MARK" "$SITE/index.html"; then
+    return 0
+  fi
+  if cp "docker/$1" "$SITE/.index.html.tmp" && mv "$SITE/.index.html.tmp" "$SITE/index.html"; then
+    return 0
+  fi
+  log "Couldn't write the placeholder page"
+}
+show_placeholder placeholder.html
 
 # Returns 0 if a new report was published.
 refresh() {
@@ -58,7 +71,12 @@ refresh() {
   if ! run_bg Rscript coach_tenure.R > output/run_log.txt 2>&1; then
     log "Run failed; keeping the previous report. Last lines of the log:"
     tail -n 20 output/run_log.txt
+    show_placeholder failed.html
     return 1
+  fi
+  if [[ -s output/run_warnings.txt ]]; then
+    log "The run finished with warnings (full log: output/run_log.txt):"
+    sed 's/^/  - /' output/run_warnings.txt
   fi
   if cp output/coach_tenure_report.html "$SITE/.index.html.tmp" &&
      mv "$SITE/.index.html.tmp" "$SITE/index.html"; then

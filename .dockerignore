@@ -9,3 +9,4 @@ plots
 compose.yaml
 .env
 .github
+tests

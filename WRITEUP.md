@@ -115,24 +115,27 @@ Firing is by far the dominant exit, roughly 8 to 1. Voluntary exits are rare and
 
 The 2026 season is through week 6. Six games are a noisy sample, and the model was fit on full seasons, so each team's season is projected: actual results so far, plus .500 football and an even point differential the rest of the way. Playoffs aren't decided, so each coach gets two numbers: one if his team misses, one if it makes it. These come from the split model in section 3.
 
+The baseline risk for each tenure season is calibrated so that the model's predicted firings add up to the firings observed in that season. Seasons 1–4 each get their own baseline. Seasons 5 and later share one, because few coaches get that far and the per-season counts jump around (7, 11 and 3 firings in seasons 5, 6 and 7).
+
 | Coach | Team | Season | 2026 so far | P(fired) if miss | P(fired) if make |
 |---|---|---|---|---|---|
-| Dan Quinn | WAS | 3rd | 1-3-1 | 50% | 11% |
-| Jim Harbaugh | LAC | 3rd | 0-5 | 38% | 8% |
-| Shane Steichen | IND | 4th | 2-3 | 32% | 6% |
-| Todd Bowles | TB | 5th | 1-4 | 31% | 6% |
-| Dan Campbell | DET | 6th | 3-2 | 25% | 5% |
-| DeMeco Ryans | HOU | 4th | 1-4 | 24% | 5% |
-| Dave Canales | CAR | 3rd | 2-2 | 24% | 5% |
-| Nick Sirianni | PHI | 6th | 2-3 | 23% | 4% |
+| Dan Quinn | WAS | 3rd | 1-3-1 | 53% | 12% |
+| Todd Bowles | TB | 5th | 1-4 | 41% | 8% |
+| Jim Harbaugh | LAC | 3rd | 0-5 | 40% | 8% |
+| Shane Steichen | IND | 4th | 2-3 | 33% | 6% |
+| Andy Reid | KC | 14th | 4-0 | 26% | 5% |
+| Dave Canales | CAR | 3rd | 2-2 | 25% | 5% |
+| DeMeco Ryans | HOU | 4th | 1-4 | 25% | 5% |
+| Zac Taylor | CIN | 8th | 3-2 | 24% | 4% |
 
-The pattern behind the list: a coach in season 3 or later, with a losing record, after a bad previous season. Quinn (Washington was 5-12 in 2025) and Harbaugh (0-5 now) fit it most clearly.
+The pattern behind the list: a coach in season 3 or later, with a losing record, after a bad previous season. Quinn (Washington was 5-12 in 2025), Bowles and Harbaugh (0-5 now) fit it most clearly.
 
 First-year coaches with bad starts, such as Hafley (0-5), Saleh (0-5) and Mike LaFleur (1-4), rate low. Since 2000 almost nobody has been fired after one season.
 
 **Read these as model estimates, not predictions.**
-- The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries, scandals or owner temperament. That is why Campbell, Sirianni and Andy Reid (22% "if miss", 14th season) show up higher than anyone following the league would put them.
-- Few coaches reach season 8 or later, so the baseline risk for long tenures is pooled and imprecise.
+- The model knows wins, playoffs, tenure, age, experience and front-office turnover. It knows nothing about Super Bowl rings, contracts, quarterback injuries, scandals or owner temperament. That is why Andy Reid (26% "if miss" at 4-0, in his 14th season) ranks fifth, and why Dan Campbell (19%) and Nick Sirianni (17%) sit higher than anyone following the league would put them.
+- Few coaches reach season 5 or later, so the baseline risk from there on is pooled across seasons and imprecise.
+- Coaching changes are entered by hand. The games data doesn't reveal a firing: nflverse kept crediting the fired coach after every mid-season firing of 2024 and 2025. A coach who has left stays on the list until his departure is in `coach_changes.csv`; the report shows the latest departure on record.
 - "If miss" is the relevant number for losing teams. For 5-0 teams the "if make" column is the realistic one.
 
 ## Limitations
